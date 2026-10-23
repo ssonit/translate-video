@@ -1,7 +1,9 @@
+mod deepseek_server;
 mod job;
 mod listen;
 mod names;
 mod ollama;
+mod parallel;
 mod pipeline;
 mod piper;
 mod speech;
@@ -89,7 +91,7 @@ fn ollama_program() -> Option<PathBuf> {
     path.is_file().then_some(path)
 }
 
-fn capture(mut command: Command, timeout: Duration) -> Result<String, String> {
+pub(crate) fn capture(mut command: Command, timeout: Duration) -> Result<String, String> {
     let mut child = hidden(&mut command)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -167,6 +169,8 @@ fn ollama_check(choice: &TranslationChoice, skip_translate: bool) -> (ToolCheck,
         ready: skip_translate || cloud || program.is_some(),
         detail: if skip_translate {
             "Không dịch, chỉ đổi giọng. Không cần Ollama.".into()
+        } else if choice.provider == "deepseek-local" {
+            "Không cần Ollama. DeepSeek local dùng server trên máy.".into()
         } else if cloud {
             "Không cần Ollama khi dịch bằng API key. Chỉ cài nếu muốn dịch trên máy.".into()
         } else if program.is_some() {
@@ -212,7 +216,7 @@ impl TranslationChoice {
         self
     }
 
-    // Đổi sang dịch vụ khác bằng key đã lưu. "local" không cần key.
+    // Đổi sang dịch vụ khác bằng key đã lưu. "local" và "deepseek-local" không cần key.
     fn switched(self, next: &str) -> Result<Self, String> {
         let mut current = self.stashed();
         let saved = std::mem::take(&mut current.saved);
@@ -221,6 +225,18 @@ impl TranslationChoice {
                 provider: "local".into(),
                 api_key: String::new(),
                 model: String::new(),
+                saved,
+            });
+        }
+        if next == "deepseek-local" {
+            let model = saved
+                .get(next)
+                .map(|entry| entry.model.clone())
+                .unwrap_or_default();
+            return Ok(Self {
+                provider: "deepseek-local".into(),
+                api_key: String::new(),
+                model,
                 saved,
             });
         }
@@ -258,6 +274,13 @@ fn normalize_choice(provider: &str, api_key: &str) -> Result<TranslationChoice, 
             model: String::new(),
             saved: Default::default(),
         }),
+        // Server Deepseek-API trên máy dùng tài khoản chat, không có API key.
+        "deepseek-local" => Ok(TranslationChoice {
+            provider: "deepseek-local".into(),
+            api_key: String::new(),
+            model: String::new(),
+            saved: Default::default(),
+        }),
         "gemini" | "openai" | "claude" | "deepseek" => {
             let key = api_key.trim();
             if key.is_empty() {
@@ -288,6 +311,24 @@ fn clean_model(provider: &str, model: &str) -> Result<String, String> {
     Ok(model.to_string())
 }
 
+// Bản chỉ có DeepSeek trên máy lưu nó là "deepseek" và không có key. Nay đó là "deepseek-local",
+// còn "deepseek" là API key. Chuyển lựa chọn cũ sang để khỏi rơi về Ollama và mất các key đã lưu.
+fn migrated(mut choice: TranslationChoice) -> TranslationChoice {
+    if choice.provider == "deepseek" && choice.api_key.trim().is_empty() {
+        choice.provider = "deepseek-local".into();
+    }
+    let keyless = choice
+        .saved
+        .get("deepseek")
+        .is_some_and(|entry| entry.api_key.trim().is_empty());
+    if keyless {
+        if let Some(old) = choice.saved.remove("deepseek") {
+            choice.saved.entry("deepseek-local".into()).or_insert(old);
+        }
+    }
+    choice
+}
+
 fn read_choice(path: &Path) -> TranslationChoice {
     let Ok(text) = std::fs::read_to_string(path) else {
         return TranslationChoice::default();
@@ -295,6 +336,7 @@ fn read_choice(path: &Path) -> TranslationChoice {
     serde_json::from_str(&text)
         .ok()
         .and_then(|choice: TranslationChoice| {
+            let choice = migrated(choice);
             let mut fixed = normalize_choice(&choice.provider, &choice.api_key).ok()?;
             fixed.model = clean_model(&fixed.provider, &choice.model).unwrap_or_default();
             for (name, entry) in &choice.saved {
@@ -424,18 +466,24 @@ fn running_model_names() -> Result<Vec<String>, String> {
     Ok(tags_model_names(&body))
 }
 
+// Hỏi Ollama mất gần một giây khi nó chưa mở. Lệnh không async chạy trên luồng chính của cửa sổ
+// và làm nó đơ, nên việc này chạy ở luồng nền như check_setup.
 #[tauri::command]
-fn list_local_models() -> Result<Vec<String>, String> {
-    if ollama_program().is_none() {
-        return Err("Chưa thấy Ollama.".into());
-    }
-    running_model_names().map_err(|error| {
-        if error == "closed" {
-            "Mở Ollama rồi kiểm tra lại.".into()
-        } else {
-            error
+async fn list_local_models() -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        if ollama_program().is_none() {
+            return Err(String::from("Chưa thấy Ollama."));
         }
+        running_model_names().map_err(|error| {
+            if error == "closed" {
+                String::from("Mở Ollama rồi kiểm tra lại.")
+            } else {
+                error
+            }
+        })
     })
+    .await
+    .unwrap_or_else(|_| Err(String::from("Chưa đọc được danh sách model.")))
 }
 
 fn usable_output_dir(saved: &str) -> Result<String, String> {
@@ -515,6 +563,9 @@ fn model_check(
             detail: "Không dịch, chỉ đổi giọng. Không cần model dịch.".into(),
         };
     }
+    if choice.provider == "deepseek-local" {
+        return deepseek_local_status(ollama::deepseek_local_up());
+    }
     if choice.provider != "local" {
         let name = match choice.provider.as_str() {
             "gemini" => "Gemini",
@@ -565,6 +616,18 @@ fn model_check(
             id: "model".into(),
             ready: false,
             detail: "Ollama có trên máy. Hãy mở ứng dụng Ollama, rồi kiểm tra lại.".into(),
+        },
+    }
+}
+
+fn deepseek_local_status(up: bool) -> ToolCheck {
+    ToolCheck {
+        id: "model".into(),
+        ready: up,
+        detail: if up {
+            "Dịch bằng DeepSeek local. Server đang chạy tại http://127.0.0.1:8000.".into()
+        } else {
+            "Chưa bật DeepSeek local. Bấm Bật DeepSeek bên cạnh.".into()
         },
     }
 }
@@ -848,15 +911,33 @@ fn piper_check() -> ToolCheck {
     }
 }
 
+const CHECK_IDS: [&str; 7] = ["ffmpeg", "ollama", "model", "voice", "piper", "whisper", "ytdlp"];
+
+// Mỗi mục có thể mở một chương trình ngoài (ffmpeg, python, yt-dlp, piper). Chạy cùng lúc thì
+// tổng thời gian chỉ bằng mục chậm nhất, không cộng dồn. Thứ tự kết quả theo CHECK_IDS.
 fn run_checks(choice: &TranslationChoice, skip_translate: bool) -> Vec<ToolCheck> {
-    let ffmpeg = ffmpeg_check();
-    let (ollama, program) = ollama_check(choice, skip_translate);
-    let model = model_check(program.as_ref(), choice, skip_translate);
-    let voice = voice_check();
-    let piper = piper_check();
-    let whisper = whisper_check();
-    let ytdlp = ytdlp_check();
-    vec![ffmpeg, ollama, model, voice, piper, whisper, ytdlp]
+    let jobs: Vec<parallel::Job<ToolCheck>> = vec![
+        Box::new(ffmpeg_check),
+        Box::new(move || ollama_check(choice, skip_translate).0),
+        Box::new(move || {
+            // Chỉ khi dịch trên máy mới cần biết Ollama nằm ở đâu.
+            let program = if choice.provider == "local" && !skip_translate {
+                ollama_program()
+            } else {
+                None
+            };
+            model_check(program.as_ref(), choice, skip_translate)
+        }),
+        Box::new(voice_check),
+        Box::new(piper_check),
+        Box::new(whisper_check),
+        Box::new(ytdlp_check),
+    ];
+    parallel::in_order(jobs, |index| ToolCheck {
+        id: CHECK_IDS[index].into(),
+        ready: false,
+        detail: "Chưa kiểm tra được mục này.".into(),
+    })
 }
 
 #[tauri::command]
@@ -1533,6 +1614,7 @@ async fn translate_listen_part(
             .ok()
             .map(|path| read_choice(&path))
             .unwrap_or_default();
+        ollama::require_deepseek_local(&choice, false)?;
         let (_, target_name) = pipeline::clean_target(&target);
         let prev = if outline.index > 1 {
             listen_outline(&root, outline.index - 1)?.text
@@ -1993,10 +2075,19 @@ pub fn run() {
             tts::tts_finish,
             tts::tts_prepared,
             whisper_install::install_whisper,
-            whisper_install::cancel_whisper_install
+            whisper_install::cancel_whisper_install,
+            deepseek_server::deepseek_server_running,
+            deepseek_server::start_deepseek_server,
+            deepseek_server::stop_deepseek_server
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .manage(deepseek_server::Control::default())
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        .run(|app, event| {
+            if let tauri::RunEvent::Exit = event {
+                deepseek_server::stop_owned(&app.state::<deepseek_server::Control>());
+            }
+        });
 }
 
 #[cfg(test)]
@@ -2044,6 +2135,75 @@ mod tests {
         let local = back.switched("local").unwrap();
         assert_eq!(local.provider, "local");
         assert_eq!(local.saved.len(), 2);
+
+        // DeepSeek API cần key như Gemini hay Claude. DeepSeek local thì không.
+        assert!(local.clone().switched("deepseek").is_err());
+        let on_deepseek_local = local.switched("deepseek-local").unwrap();
+        assert_eq!(on_deepseek_local.provider, "deepseek-local");
+        assert!(on_deepseek_local.api_key.is_empty());
+        let back_local = on_deepseek_local.switched("local").unwrap();
+        assert_eq!(back_local.provider, "local");
+        assert!(back_local.saved.contains_key("deepseek-local"));
+        assert!(!back_local.saved.contains_key("deepseek"));
+    }
+
+    #[test]
+    fn deepseek_api_and_local_keep_separate_keys_and_models() {
+        let api = TranslationChoice {
+            model: "deepseek-v4-pro".into(),
+            ..normalize_choice("deepseek", "sk-ds").unwrap()
+        };
+        let on_local = api.switched("deepseek-local").unwrap();
+        assert_eq!(on_local.provider, "deepseek-local");
+        assert!(on_local.api_key.is_empty());
+        assert!(on_local.model.is_empty());
+
+        let on_local = TranslationChoice {
+            model: "deepseek-expert".into(),
+            ..on_local
+        };
+        let back_api = on_local.switched("deepseek").unwrap();
+        assert_eq!(back_api.provider, "deepseek");
+        assert_eq!(
+            (back_api.api_key.as_str(), back_api.model.as_str()),
+            ("sk-ds", "deepseek-v4-pro")
+        );
+
+        let back_local = back_api.switched("deepseek-local").unwrap();
+        assert_eq!(back_local.model, "deepseek-expert");
+        assert!(back_local.api_key.is_empty());
+    }
+
+    #[test]
+    fn choice_saved_by_the_local_only_build_moves_to_deepseek_local() {
+        let dir = scratch("choice-migrate");
+        let path = dir.join("translation.json");
+        // Bản chỉ có DeepSeek trên máy lưu "deepseek" không key, kèm key Gemini đã lưu.
+        fs::write(
+            &path,
+            br#"{"provider":"deepseek","apiKey":"","model":"deepseek-expert","saved":{"gemini":{"apiKey":"g-key","model":""},"deepseek":{"apiKey":"","model":"deepseek-expert"}}}"#,
+        )
+        .unwrap();
+        let choice = read_choice(&path);
+        assert_eq!(choice.provider, "deepseek-local");
+        assert_eq!(choice.model, "deepseek-expert");
+        assert_eq!(choice.saved["gemini"].api_key, "g-key");
+        assert!(!choice.saved.contains_key("deepseek"));
+        assert_eq!(choice.saved["deepseek-local"].model, "deepseek-expert");
+
+        // Có key thì vẫn là DeepSeek API.
+        fs::write(
+            &path,
+            br#"{"provider":"deepseek","apiKey":"sk-ds","model":"deepseek-flash","saved":{"deepseek-local":{"apiKey":"","model":"deepseek-chat"}}}"#,
+        )
+        .unwrap();
+        let choice = read_choice(&path);
+        assert_eq!(
+            (choice.provider.as_str(), choice.api_key.as_str()),
+            ("deepseek", "sk-ds")
+        );
+        assert_eq!(choice.model, "deepseek-flash");
+        assert_eq!(choice.saved["deepseek-local"].model, "deepseek-chat");
     }
 
     #[test]
@@ -2090,6 +2250,17 @@ mod tests {
         assert!(clean_model("gemini", "a/b").is_err());
         assert!(clean_model("openai", "gpt\"x").is_err());
         assert_eq!(clean_model("claude", "").unwrap(), "");
+        // Mỗi bên DeepSeek giữ đúng tên model của mình, không đổi qua lại.
+        assert_eq!(
+            clean_model("deepseek", "deepseek-flash").unwrap(),
+            "deepseek-flash"
+        );
+        assert_eq!(
+            clean_model("deepseek-local", "deepseek-expert").unwrap(),
+            "deepseek-expert"
+        );
+        assert!(clean_model("deepseek", "a/b").is_err());
+        assert!(clean_model("deepseek-local", "a/b").is_err());
     }
 
     #[test]
@@ -2185,15 +2356,53 @@ mod tests {
             .is_empty());
         let ready = model_check(None, &normalize_choice("claude", "key").unwrap(), false);
         assert!(ready.ready);
-        let deepseek = model_check(
-            None,
-            &normalize_choice("deepseek", " sk-ds ").unwrap(),
-            false,
-        );
-        assert!(deepseek.ready);
-        assert!(deepseek.detail.contains("DeepSeek"));
+        // DeepSeek API cần key như các dịch vụ qua mạng khác.
+        assert!(normalize_choice("deepseek", "  ").is_err());
+        let deepseek = normalize_choice("deepseek", " sk-ds ").unwrap();
+        assert_eq!(deepseek.provider, "deepseek");
+        assert_eq!(deepseek.api_key, "sk-ds");
+        let api = model_check(None, &deepseek, false);
+        assert!(api.ready);
+        assert!(api.detail.contains("DeepSeek"));
+        // DeepSeek local không có key, chỉ cần server đang chạy.
+        let local = normalize_choice("deepseek-local", "secret").unwrap();
+        assert_eq!(local.provider, "deepseek-local");
+        assert!(local.api_key.is_empty());
+        let up = deepseek_local_status(true);
+        assert!(up.ready);
+        assert!(up.detail.contains("127.0.0.1:8000"));
+        let down = deepseek_local_status(false);
+        assert!(!down.ready);
+        assert!(down.detail.contains("Bật DeepSeek"));
         assert!(!model_check(None, &TranslationChoice::default(), false).ready);
         assert!(model_check(None, &TranslationChoice::default(), true).ready);
+    }
+
+    // Mở chương trình thật trên máy (where.exe, ffmpeg, python, yt-dlp), nên không chạy mặc định:
+    // cargo test --lib -- --ignored run_checks_on_this_machine --nocapture
+    #[test]
+    #[ignore]
+    fn run_checks_on_this_machine() {
+        let choice = TranslationChoice::default();
+        let started = Instant::now();
+        let one_by_one = vec![
+            ffmpeg_check(),
+            ollama_check(&choice, false).0,
+            model_check(ollama_program().as_ref(), &choice, false),
+            voice_check(),
+            piper_check(),
+            whisper_check(),
+            ytdlp_check(),
+        ];
+        let sequential = started.elapsed();
+        let started = Instant::now();
+        let together = run_checks(&choice, false);
+        eprintln!("lần lượt {sequential:?}, song song {:?}", started.elapsed());
+        let ids: Vec<&str> = together.iter().map(|check| check.id.as_str()).collect();
+        assert_eq!(ids, CHECK_IDS);
+        let same: Vec<(&str, bool)> = one_by_one.iter().map(|c| (c.id.as_str(), c.ready)).collect();
+        let now: Vec<(&str, bool)> = together.iter().map(|c| (c.id.as_str(), c.ready)).collect();
+        assert_eq!(same, now, "song song phải cho cùng kết quả với lần lượt");
     }
 
     #[test]

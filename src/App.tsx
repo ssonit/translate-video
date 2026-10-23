@@ -1,18 +1,14 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { GUIDES, OPTIONAL_TOOLS, guideFor, type CloudChoice, type ToolId } from "./guides";
+import { DeepseekServerRow, useDeepseekServer } from "./DeepseekServer";
+import { DEEPSEEK_LOCAL_STEPS, GUIDES, OPTIONAL_TOOLS, guideFor, type CloudChoice, type ToolId } from "./guides";
 import LocalModels from "./LocalModels";
+import { firstGap, markFor, summarize, type ToolStatus } from "./setupStatus";
 import Work from "./Work";
 import { useTtsBridge } from "./tts/bridge";
 import "./App.css";
-
-type ToolStatus = {
-  id: ToolId;
-  ready: boolean;
-  detail: string;
-};
 
 type Provider = "local" | CloudChoice["id"];
 
@@ -22,6 +18,16 @@ type InstallEvent = {
   done: number;
   total: number;
 };
+
+const MARK_CLASS = { ready: "mark is-ready", wait: "mark is-wait", bad: "mark" } as const;
+
+function setupKicker(ready: boolean, guideId: ToolId, provider: Provider) {
+  const serverCard = guideId === "model" && provider === "deepseek-local";
+  if (!ready) return serverCard ? "Cách bật" : "Cách tải";
+  if (serverCard) return "DeepSeek local";
+  if (guideId === "model" && provider !== "local") return "Dịch qua mạng";
+  return "Đã có trên máy";
+}
 
 export default function App() {
   useTtsBridge();
@@ -33,8 +39,8 @@ export default function App() {
   const [provider, setProvider] = useState<Provider>("local");
   const [apiKey, setApiKey] = useState("");
   const [keyNote, setKeyNote] = useState("");
-  const [screen, setScreen] = useState<"setup" | "work">("setup");
-  const [openedWork, setOpenedWork] = useState(false);
+  // App mở thẳng màn lồng tiếng. Kiểm tra máy chạy nền, kết quả hiện ở chip đầu màn đó.
+  const [screen, setScreen] = useState<"setup" | "work">("work");
   // Work stays mounted once opened, so a run keeps its state while the user looks at the tools.
   const [workMounted, setWorkMounted] = useState(false);
   const [busy, setBusy] = useState("");
@@ -49,6 +55,8 @@ export default function App() {
   const [modelListNote, setModelListNote] = useState("");
   const [skipTranslate, setSkipTranslate] = useState(false);
   const [prefsEpoch, setPrefsEpoch] = useState(0);
+  // Chỉ hỏi server khi hàng Bật/Tắt đang hiện. Ô Dịch bằng bên màn lồng tiếng tự hỏi riêng.
+  const deepseek = useDeepseekServer(provider === "deepseek-local" && screen === "setup", tools);
 
   const loadModels = useCallback(async () => {
     try {
@@ -60,25 +68,48 @@ export default function App() {
     }
   }, []);
 
-  const check = useCallback(async (keepSelection = false) => {
-    setChecking(true);
-    setError("");
-    try {
-      const next = await invoke<ToolStatus[]>("check_setup");
-      setTools(next);
-      await loadModels();
-      if (!keepSelection) {
-        const firstGap = next.find((tool) => !tool.ready && !OPTIONAL_TOOLS.includes(tool.id));
-        if (firstGap) setSelected(firstGap.id);
-      }
-    } catch {
-      setError("Mở bằng cửa sổ app để kiểm tra máy. Trang Vite một mình không đọc được PATH.");
-    } finally {
-      setChecking(false);
-    }
-  }, [loadModels]);
+  // Màn lồng tiếng cũng xin kiểm tra lại khi đổi dịch vụ hay key, có thể trúng lúc lần đầu còn đang
+  // chạy. Đang chạy thì chỉ ghi nhớ để chạy thêm một lượt sau đó, kẻo kết quả cũ đè kết quả mới.
+  const checkBusy = useRef(false);
+  const checkAgain = useRef(false);
 
+  const check = useCallback(
+    async (keepSelection = false) => {
+      if (checkBusy.current) {
+        checkAgain.current = true;
+        return;
+      }
+      checkBusy.current = true;
+      setChecking(true);
+      try {
+        do {
+          checkAgain.current = false;
+          setError("");
+          try {
+            // Hỏi Ollama cùng lúc với check_setup, không đợi nhau.
+            const [next] = await Promise.all([invoke<ToolStatus[]>("check_setup"), loadModels()]);
+            setTools(next);
+            if (!keepSelection) {
+              const gap = firstGap(next);
+              if (gap) setSelected(gap);
+            }
+          } catch {
+            setError("Mở bằng cửa sổ app để kiểm tra máy. Trang Vite một mình không đọc được PATH.");
+          }
+        } while (checkAgain.current);
+      } finally {
+        checkBusy.current = false;
+        setChecking(false);
+      }
+    },
+    [loadModels],
+  );
+
+  // Bản dev (StrictMode) chạy effect hai lần. Kiểm tra máy mở nhiều chương trình nên chỉ chạy một lần.
+  const checkedAtStart = useRef(false);
   useEffect(() => {
+    if (checkedAtStart.current) return;
+    checkedAtStart.current = true;
     void check();
   }, [check]);
 
@@ -116,20 +147,23 @@ export default function App() {
 
   const guide = guideFor(selected);
   const status = tools.find((tool) => tool.id === selected);
+  const asksKey = Boolean(guide.clouds?.find((item) => item.id === provider)?.keyUrl);
+  const guideSteps = guide.id === "model" && provider === "deepseek-local" ? DEEPSEEK_LOCAL_STEPS : guide.steps;
   const required = tools.filter((tool) => !OPTIONAL_TOOLS.includes(tool.id));
   const readyCount = required.filter((tool) => tool.ready).length;
-  const ready = required.length > 0 && readyCount === required.length;
+  const setup = summarize(tools, checking);
+  // Chưa có kết quả cho mục đang chọn: đừng hiện cách tải như thể mục đó thiếu.
+  const unknown = !status && checking;
 
   useEffect(() => {
     if (screen === "work") setWorkMounted(true);
   }, [screen]);
 
-  useEffect(() => {
-    if (!openedWork && !checking && ready) {
-      setOpenedWork(true);
-      setScreen("work");
-    }
-  }, [openedWork, checking, ready]);
+  function openSetup() {
+    const gap = firstGap(tools);
+    if (gap) setSelected(gap);
+    setScreen("setup");
+  }
 
   async function openLink(url: string) {
     try {
@@ -203,8 +237,9 @@ export default function App() {
     try {
       await invoke("save_translation_choice", { provider: next, apiKey: key });
       setProvider(next);
-      setApiKey(next === "local" ? "" : key.trim());
-      setKeyNote(next === "local" ? "" : "Đã lưu key trên máy.");
+      const keyless = next === "local" || next === "deepseek-local";
+      setApiKey(keyless ? "" : key.trim());
+      setKeyNote(keyless ? "" : "Đã lưu key trên máy.");
       await check(true);
     } catch (caught) {
       setKeyNote(typeof caught === "string" ? caught : "Chưa lưu được key.");
@@ -218,9 +253,11 @@ export default function App() {
           installed={installed}
           modelListNote={modelListNote}
           prefsEpoch={prefsEpoch}
-          onSetup={() => setScreen("setup")}
+          setup={setup}
+          onSetup={openSetup}
+          onChanged={() => void check(true)}
           onBusy={setBusy}
-          onReloadModels={() => void loadModels()}
+          onReloadModels={() => void check(true)}
         />
       </div>
     ) : null;
@@ -236,15 +273,9 @@ export default function App() {
         <div className="mast-row">
           <h1>Đủ đồ nghề chưa</h1>
           <div className="mast-actions">
-            {busy ? (
-              <button type="button" className="link" onClick={() => setScreen("work")}>
-                {busy}, xem tiến độ
-              </button>
-            ) : ready ? (
-              <button type="button" className="link" onClick={() => setScreen("work")}>
-                Lồng tiếng
-              </button>
-            ) : null}
+            <button type="button" className="link" onClick={() => setScreen("work")}>
+              {busy ? `${busy}, xem tiến độ` : "Lồng tiếng"}
+            </button>
             <button type="button" className="check" onClick={() => void check()} disabled={checking}>
               {checking ? "Đang kiểm tra" : "Kiểm tra lại"}
             </button>
@@ -254,7 +285,11 @@ export default function App() {
           Máy tự đối chiếu các công cụ. Mục nào thiếu, bấm vào để xem cách tải. Bạn tự tải file về máy.
         </p>
         <p className="count">
-          {tools.length === 0 ? "Chưa có kết quả" : `${readyCount}/${required.length} đã có`}
+          {required.length === 0
+            ? checking
+              ? "Đang kiểm tra"
+              : "Chưa có kết quả"
+            : `${readyCount}/${required.length} đã có`}
         </p>
         {error ? <p className="error">{error}</p> : null}
       </header>
@@ -262,8 +297,11 @@ export default function App() {
       <section className="sheet">
         <ol className="list">
           {GUIDES.map((item, index) => {
-            const itemStatus = tools.find((tool) => tool.id === item.id);
-            const ready = itemStatus?.ready ?? false;
+            const mark = markFor(
+              tools.find((tool) => tool.id === item.id),
+              OPTIONAL_TOOLS.includes(item.id),
+              checking,
+            );
             return (
               <li key={item.id}>
                 <button
@@ -276,9 +314,7 @@ export default function App() {
                     <strong>{item.name}</strong>
                     <em>{item.role}</em>
                   </span>
-                  <span className={ready ? "mark is-ready" : "mark"}>
-                    {ready ? "Có" : OPTIONAL_TOOLS.includes(item.id) ? "Tùy chọn" : "Thiếu"}
-                  </span>
+                  <span className={MARK_CLASS[mark.tone]}>{mark.text}</span>
                 </button>
               </li>
             );
@@ -286,9 +322,7 @@ export default function App() {
         </ol>
 
         <article className="guide">
-          <p className="kicker">
-            {status?.ready ? (guide.clouds && provider !== "local" ? "Dịch qua mạng" : "Đã có trên máy") : "Cách tải"}
-          </p>
+          <p className="kicker">{setupKicker(Boolean(status?.ready), guide.id, provider)}</p>
           <h2>{guide.name}</h2>
           <p className="detail">{status?.detail ?? guide.role}</p>
           {guide.id === "model" ? (
@@ -308,9 +342,11 @@ export default function App() {
           ) : null}
           {status?.ready ? (
             <p className="done">Mục này xong. Chọn dòng còn thiếu nếu vẫn còn.</p>
+          ) : unknown ? (
+            <p className="key-note">Đang kiểm tra máy.</p>
           ) : (
             <ol>
-              {guide.steps.map((step) => (
+              {guideSteps.map((step) => (
                 <li key={step}>{step}</li>
               ))}
             </ol>
@@ -331,6 +367,10 @@ export default function App() {
                   className={provider === cloud.id ? "pick is-on" : "pick"}
                   onClick={() => {
                     if (provider === cloud.id) return;
+                    if (!cloud.keyUrl) {
+                      void saveProvider(cloud.id, "");
+                      return;
+                    }
                     setProvider(cloud.id);
                     setApiKey("");
                     setKeyNote("");
@@ -421,7 +461,10 @@ export default function App() {
           ) : null}
           {guide.id === "whisper" && installError ? <p className="error install-error">{installError}</p> : null}
           {guide.id === "voice" && voiceNote ? <p className="key-note">{voiceNote}</p> : null}
-          {guide.clouds && provider !== "local" ? (
+          {guide.id === "model" && provider === "deepseek-local" ? (
+            <DeepseekServerRow server={deepseek} after={() => check(true)} />
+          ) : null}
+          {asksKey ? (
             <form
               className="key-row"
               onSubmit={(event) => {
@@ -442,7 +485,7 @@ export default function App() {
                 className="link"
                 onClick={() => {
                   const cloud = guide.clouds?.find((item) => item.id === provider);
-                  if (cloud) void openLink(cloud.keyUrl);
+                  if (cloud?.keyUrl) void openLink(cloud.keyUrl);
                 }}
               >
                 Lấy API key
@@ -450,8 +493,11 @@ export default function App() {
             </form>
           ) : null}
           {keyNote && guide.clouds ? <p className="key-note">{keyNote}</p> : null}
-          {guide.clouds && provider !== "local" ? (
-            <p className="key-note">Chỉ gửi chữ lời thoại. Video ở lại trên máy.</p>
+          {asksKey ? <p className="key-note">Chỉ gửi chữ lời thoại. Video ở lại trên máy.</p> : null}
+          {guide.id === "model" && provider === "deepseek-local" ? (
+            <p className="key-note">
+              Server trên máy dùng tài khoản chat.deepseek.com. Chỉ chữ lời thoại đi qua đó. Video ở lại trên máy.
+            </p>
           ) : null}
           {guide.links.length > 0 ? (
             <div className="links">

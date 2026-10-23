@@ -652,6 +652,16 @@ pub(crate) fn translate_work(
 
 // Bốn request cùng lúc. Cao hơn dễ dính 429, chờ rồi gọi lại còn chậm hơn.
 const ONLINE_PARALLEL: usize = 4;
+
+// Server Deepseek-API (DeepSeek local) xử lý từng request và giới hạn khoảng 30 lần mỗi phút.
+// DeepSeek API trả phí không bị vậy nên vẫn chạy song song.
+fn online_width(provider: &str) -> usize {
+    if provider == "deepseek-local" {
+        1
+    } else {
+        ONLINE_PARALLEL
+    }
+}
 // Câu lô trả thiếu hoặc sai ngôn ngữ gom lại, gọi lại cả cụm. Không gọi từng câu.
 const ONLINE_RETRY_PASSES: usize = 2;
 
@@ -698,17 +708,24 @@ fn translate_online(
     progress: &mut dyn FnMut(String, f64, f64),
     save: &mut dyn FnMut(&Vec<TranslatedLine>) -> Result<(), String>,
 ) -> Result<(Vec<TranslatedLine>, Vec<usize>), String> {
-    struct Tick(Instant);
+    let width = online_width(&choice.provider);
+    struct Tick {
+        started: Instant,
+        width: usize,
+    }
     impl Drop for Tick {
         fn drop(&mut self) {
             eprintln!(
                 "[timing] dịch online chờ {:.1}s, tối đa {} lượt một lúc",
-                self.0.elapsed().as_secs_f64(),
-                ONLINE_PARALLEL
+                self.started.elapsed().as_secs_f64(),
+                self.width,
             );
         }
     }
-    let _tick = Tick(Instant::now());
+    let _tick = Tick {
+        started: Instant::now(),
+        width,
+    };
     let texts: Vec<String> = lines.iter().map(|line| line.text.clone()).collect();
     let mut next_batch = 1u32;
     let jobs = collect_jobs(
@@ -721,7 +738,7 @@ fn translate_online(
     );
     let mut open: Vec<OpenLine> = Vec::new();
     let mut skipped: Vec<usize> = Vec::new();
-    for wave in jobs.chunks(ONLINE_PARALLEL) {
+    for wave in jobs.chunks(width) {
         stopped(cancel)?;
         show_span(wave, &done, &texts, progress);
         let result = run_wave(choice, cancel, trace, wave)?;
@@ -757,7 +774,7 @@ fn translate_online(
                 todo: indices,
             });
         }
-        for wave in retries.chunks(ONLINE_PARALLEL) {
+        for wave in retries.chunks(width) {
             stopped(cancel)?;
             let result = run_wave(choice, cancel, trace, wave)?;
             apply_wave(result, target_code, &mut done, &mut open, save, false)?;
@@ -1137,6 +1154,14 @@ mod tests {
             model: "translategemma:4b".into(),
             ..gemma
         }));
+    }
+
+    #[test]
+    fn only_deepseek_local_is_one_request_at_a_time() {
+        assert_eq!(online_width("deepseek-local"), 1);
+        for provider in ["deepseek", "gemini", "openai", "claude"] {
+            assert_eq!(online_width(provider), ONLINE_PARALLEL, "{provider}");
+        }
     }
 
     // Đo 10 lượt đầu của đúng đường dịch. Cần Ollama đang chạy. Không ghi translation.json.

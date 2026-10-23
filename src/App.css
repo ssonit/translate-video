@@ -129,6 +129,64 @@ select:disabled {
   gap: 8px;
 }
 
+/* Chip kết quả kiểm tra máy ở đầu màn lồng tiếng. Bấm vào mở màn Đồ nghề. */
+.setup-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  padding: 0.5rem 0.9rem;
+  background: var(--idle-bg);
+  color: var(--muted);
+  font-size: 0.9rem;
+  font-weight: 500;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.setup-chip::before {
+  content: "";
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.setup-chip:hover {
+  border-color: var(--line-strong);
+}
+
+.setup-chip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.setup-chip.is-ready {
+  background: var(--ok-bg);
+  color: var(--ok);
+}
+
+.setup-chip.is-gap {
+  background: var(--bad-bg);
+  color: var(--bad);
+}
+
+.setup-chip.is-checking::before {
+  animation: chip-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes chip-pulse {
+  50% {
+    opacity: 0.25;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .setup-chip.is-checking::before {
+    animation: none;
+  }
+}
+
 .lead,
 .count,
 .detail,
@@ -1468,6 +1526,11 @@ select:disabled {
 
 .tune-wide {
   grid-column: 1 / -1;
+}
+
+/* Hàng Bật/Tắt DeepSeek local nằm sát ô Dịch bằng, như thẻ model. */
+.deepseek-server .command {
+  margin-top: 0;
 }
 
 .tune .key-row {

@@ -1,3 +1,4 @@
+import { LockedNote } from "../SetupChip";
 import { jobFolder } from "./format";
 import { RunOptions } from "./options";
 import type { FinishedDub } from "./types";
@@ -15,6 +16,8 @@ export function ResumePane({
   onNames,
   onLeave,
   onResume,
+  lock,
+  onTools,
 }: {
   draft: FinishedDub;
   audioOnly: boolean;
@@ -28,6 +31,9 @@ export function ResumePane({
   onNames: (root: string) => void;
   onLeave: () => void;
   onResume: (item: FinishedDub) => void;
+  // Dòng báo thiếu mục bắt buộc. Trống thì không khóa.
+  lock: string;
+  onTools: () => void;
 }) {
   return (
     <div className="pane-fill">
@@ -49,6 +55,7 @@ export function ResumePane({
         />
       </div>
       <footer className="pane-foot">
+        <LockedNote note={lock} onTools={onTools} />
         <span className="foot-actions">
           <button type="button" className="link" onClick={() => void onNames(jobFolder(draft))} disabled={running}>
             Sửa tên
@@ -56,7 +63,12 @@ export function ResumePane({
           <button type="button" className="link" onClick={onLeave}>
             Để đó
           </button>
-          <button type="button" className="check" onClick={() => void onResume(draft)} disabled={captioning || draft.video === ""}>
+          <button
+            type="button"
+            className={lock ? "check is-idle" : "check"}
+            onClick={() => void onResume(draft)}
+            disabled={lock !== "" || captioning || draft.video === ""}
+          >
             {running ? "Thêm vào hàng" : "Chạy tiếp"}
           </button>
         </span>

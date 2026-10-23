@@ -9,10 +9,18 @@ export type GuideLink = {
 };
 
 export type CloudChoice = {
-  id: "gemini" | "openai" | "claude" | "deepseek";
+  id: "gemini" | "openai" | "claude" | "deepseek" | "deepseek-local";
   name: string;
-  keyUrl: string;
+  // Không có keyUrl nghĩa là dịch vụ không dùng API key (DeepSeek local).
+  keyUrl?: string;
 };
+
+export const DEEPSEEK_LOCAL_STEPS = [
+  "DeepSeek local không dùng API key. App gọi server Deepseek-API trên máy tại http://127.0.0.1:8000.",
+  "Bấm Bật DeepSeek và giữ cửa sổ app mở. Muốn dừng server thì bấm Tắt DeepSeek.",
+  "Lần chat đầu, nếu chưa đăng nhập, cửa sổ trình duyệt mở để vào chat.deepseek.com.",
+  "Model nhanh là deepseek-chat. deepseek-expert chậm hơn.",
+];
 
 export type LocalModel = {
   name: string;
@@ -93,7 +101,7 @@ export const GUIDES: Guide[] = [
     role: "Một model trên máy, hoặc dịch vụ qua mạng",
     steps: [
       "Trên máy: ba model dưới là gợi ý. App chỉ kiểm tra ba model đó. Muốn model khác thì sang màn lồng tiếng, chọn Khác và gõ tên. Model chưa có thì chép lệnh rồi dán vào PowerShell.",
-      "Qua mạng: chọn Gemini, ChatGPT, Claude hoặc DeepSeek, dán API key rồi lưu.",
+      "Qua mạng: chọn Gemini, ChatGPT, Claude hoặc DeepSeek API, dán API key rồi lưu. DeepSeek local thì chọn DeepSeek local và bấm Bật DeepSeek, không cần key.",
       "Bấm Kiểm tra lại.",
     ],
     links: [],
@@ -101,7 +109,8 @@ export const GUIDES: Guide[] = [
       { id: "gemini", name: "Gemini", keyUrl: "https://aistudio.google.com/apikey" },
       { id: "openai", name: "ChatGPT", keyUrl: "https://platform.openai.com/api-keys" },
       { id: "claude", name: "Claude", keyUrl: "https://console.anthropic.com/settings/keys" },
-      { id: "deepseek", name: "DeepSeek", keyUrl: "https://platform.deepseek.com/api_keys" },
+      { id: "deepseek", name: "DeepSeek API", keyUrl: "https://platform.deepseek.com/api_keys" },
+      { id: "deepseek-local", name: "DeepSeek local" },
     ],
   },
   {

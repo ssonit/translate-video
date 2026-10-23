@@ -1,4 +1,6 @@
+import { DeepseekServerRow, useDeepseekServer } from "../DeepseekServer";
 import LocalModels from "../LocalModels";
+import { LockedNote } from "../SetupChip";
 import { LOCAL_MODELS } from "../guides";
 import { fileName, languageName, LANGUAGES } from "./format";
 import { MODEL_HINTS, OTHER_MODEL } from "./models";
@@ -56,6 +58,9 @@ export function Composer({
   onDrop,
   onRun,
   onLive,
+  lock,
+  onTools,
+  onChanged,
 }: {
   mode: "file" | "link";
   onMode: (mode: "file" | "link") => void;
@@ -107,9 +112,15 @@ export function Composer({
   onDrop: (id: string) => void;
   onRun: () => void;
   onLive: () => void;
+  // Dòng báo thiếu mục bắt buộc. Trống thì không khóa.
+  lock: string;
+  onTools: () => void;
+  // Bật hay tắt server DeepSeek làm kết quả kiểm tra máy đổi theo.
+  onChanged: () => void;
 }) {
   const hint = MODEL_HINTS[provider] ?? MODEL_HINTS.local;
   const local = provider === "local";
+  const deepseek = useDeepseekServer(provider === "deepseek-local" && !skipTranslate);
   const onMachine = (name: string) => installed?.includes(name) ?? false;
   const listedModels = local && installed !== null ? hint.models.filter((name) => onMachine(name)) : hint.models;
   const chosenMissing = local && installed !== null && model !== "" && hint.models.includes(model) && !onMachine(model);
@@ -117,6 +128,8 @@ export function Composer({
   const showCustomModel = customModel || (model !== "" && !hint.models.includes(model));
   const hasSource = mode === "file" ? composeVideo !== "" : composeLink.trim() !== "";
   const canRun = hasSource && folder !== "" && !captioning && !running;
+  // Thiếu mục bắt buộc thì khóa các nút chạy. Chọn video, đổi dịch vụ, bật server vẫn làm được.
+  const locked = lock !== "";
 
   return (
     <div className="pane-fill">
@@ -196,7 +209,7 @@ export function Composer({
                   <input
                     type="password"
                     value={keyDraft}
-                    placeholder={`API key ${MODEL_HINTS[pending].name}`}
+                    placeholder={`API key ${MODEL_HINTS[pending].keyName ?? MODEL_HINTS[pending].name}`}
                     aria-label="API key"
                     autoComplete="off"
                     onChange={(event) => onKeyDraft(event.target.value)}
@@ -268,6 +281,14 @@ export function Composer({
                   <button type="button" className="link model-refresh" onClick={onReloadModels}>
                     Xem model đã tải
                   </button>
+                </div>
+              ) : null}
+              {provider === "deepseek-local" && !pending ? (
+                <div className="tune-wide deepseek-server">
+                  <DeepseekServerRow server={deepseek} lockStop={running} after={onChanged} />
+                  <p className="key-note">
+                    Gọi server DeepSeek local trên máy, không cần API key. deepseek-chat nhanh, deepseek-expert chậm hơn.
+                  </p>
                 </div>
               ) : null}
             </>
@@ -351,16 +372,17 @@ export function Composer({
         {error ? <p className="error">{error}</p> : null}
       </div>
       <footer className="pane-foot">
+        <LockedNote note={lock} onTools={onTools} />
         <span className="foot-actions">
           <button
             type="button"
-            className="check"
+            className={locked ? "check is-idle" : "check"}
             onClick={() => void (running && mode === "file" && !hasSource ? onPickVideo() : onRun())}
-            disabled={captioning || folder === "" || (running ? mode === "link" && !hasSource : !hasSource && queue.length === 0)}
+            disabled={locked || captioning || folder === "" || (running ? mode === "link" && !hasSource : !hasSource && queue.length === 0)}
           >
             {running ? (mode === "file" && !hasSource ? "Thêm video" : "Thêm vào hàng") : hasSource ? "Chạy" : `Chạy hàng (${queue.length})`}
           </button>
-          <button type="button" className="check" onClick={() => void onLive()} disabled={!canRun}>
+          <button type="button" className={locked ? "check is-idle" : "check"} onClick={() => void onLive()} disabled={locked || !canRun}>
             {audioOnly ? "Nghe trước" : "Xem trước"}
           </button>
         </span>

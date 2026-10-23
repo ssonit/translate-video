@@ -3,7 +3,11 @@ import { LOCAL_MODELS } from "../guides";
 // Gợi ý model cho từng dịch vụ; ô nhập vẫn cho gõ tên model khác. Trống = model mặc định của app.
 export const OTHER_MODEL = "__other__";
 
-export const MODEL_HINTS: Record<string, { name: string; fallback: string; models: string[] }> = {
+// keyName: tên ngắn đi sau chữ "API key" ở ô nhập key, khi name đã có sẵn chữ API.
+export const MODEL_HINTS: Record<
+  string,
+  { name: string; keyName?: string; fallback: string; models: string[] }
+> = {
   local: { name: "Ollama trên máy", fallback: "qwen3.5:9b-q4_K_M", models: LOCAL_MODELS.map((item) => item.name) },
   gemini: {
     name: "Gemini",
@@ -16,9 +20,17 @@ export const MODEL_HINTS: Record<string, { name: string; fallback: string; model
     fallback: "claude-haiku-4-5-20251001",
     models: ["claude-haiku-4-5-20251001", "claude-sonnet-5-5", "claude-opus-5-5"],
   },
+  // API key trả phí. Tên model khác server local, hai bên không dùng chung.
   deepseek: {
-    name: "DeepSeek",
+    name: "DeepSeek API",
+    keyName: "DeepSeek",
     fallback: "deepseek-flash",
     models: ["deepseek-flash", "deepseek-v4-pro"],
+  },
+  // Server Deepseek-API trên máy, không cần key.
+  "deepseek-local": {
+    name: "DeepSeek local",
+    fallback: "deepseek-chat",
+    models: ["deepseek-chat", "deepseek-expert"],
   },
 };

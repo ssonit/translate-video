@@ -6,13 +6,14 @@ App desktop để chọn một video trên máy, tách tiếng, chép lời, d�
 
 1. FFmpeg tách tiếng.
 2. Whisper chép lời.
-3. Dịch. Có API key Gemini, ChatGPT, Claude hoặc DeepSeek thì dùng luôn (chỉ chữ lời thoại đi qua mạng). Ollama không bắt buộc, chỉ cài nếu muốn dịch trên máy: model `qwen3.5:9b-q4_K_M` hoặc `gemma3:12b` tại `http://localhost:11434`.
+3. Dịch. Có API key Gemini, ChatGPT, Claude hoặc DeepSeek thì dùng luôn (chỉ chữ lời thoại đi qua mạng). DeepSeek local thì bấm Bật DeepSeek, app gọi server Deepseek-API trên máy tại `http://127.0.0.1:8000` (model `deepseek-chat` hoặc `deepseek-expert`), không cần key. Ollama không bắt buộc, chỉ cài nếu muốn dịch trên máy: model `qwen3.5:9b-q4_K_M` hoặc `gemma3:12b` tại `http://localhost:11434`.
 4. Giọng Piper đọc tiếng Việt bằng file giọng trong `voices/vi`. Có `piper.exe` trong folder `piper` thì app đọc bằng chương trình đó. Không có thì giọng chạy ngay trong cửa sổ app (ONNX Runtime Web).
 5. FFmpeg ghép video, phụ đề và tiếng lồng vào folder người dùng chọn.
 
 ## Hiện có
 
-- Màn chuẩn bị: kiểm tra FFmpeg, Ollama (chỉ cần khi dịch trên máy), model dịch, giọng, Whisper. Mục thiếu thì hiện cách tải. App không tự tải gì, trừ nút "Tải Whisper".
+- Mở app là vào thẳng màn lồng tiếng, việc kiểm tra máy chạy ở nền. Kết quả là chip ở góc phải: "Đủ đồ nghề" hoặc "Thiếu Whisper, xem". Thiếu mục bắt buộc thì các nút Chạy bị khóa, kèm dòng báo thiếu gì.
+- Màn chuẩn bị (bấm chip để mở): kiểm tra FFmpeg, Ollama (chỉ cần khi dịch trên máy), model dịch, giọng, Whisper. Mục thiếu thì hiện cách tải. App không tự tải gì, trừ nút "Tải Whisper".
 - `voices/<mã ngôn ngữ>` (`vi`, `en`, `zh`, `ja`, `ko`, `fr`, `de`, `es`, `ru`, `th`, `id`, `pt`): các cặp `.onnx` và `.onnx.json`. Giọng được đọc bằng `onnxruntime-web` và `phonemizer` (espeak-ng WASM) trong Web Worker, kèm bộ chuẩn hóa tiếng Việt (số, ngày, tiền, từ viết tắt) lấy từ project Local-TTS (`src/tts`). Một luồng, khoảng 1,8 lần thời gian thực.
 - Chọn giọng và nghe thử: mục "Giọng Việt" trên màn chuẩn bị có ô chọn giọng (lưu lại cho lần sau) và nút Thử giọng đọc một câu mẫu.
 - Khi đọc giọng, Rust gửi danh sách câu cho cửa sổ app, cửa sổ đọc rồi gửi wav về để ghi vào folder việc. Phải giữ cửa sổ app mở khi đang lồng.

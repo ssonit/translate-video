@@ -44,3 +44,6 @@ VideoLingo/
 
 __pycache__/
 *.pyc
+
+# DeepSeek local server: venv and login session stay on this machine
+Deepseek-API/

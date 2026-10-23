@@ -244,6 +244,12 @@ pub(crate) fn run_watch(
     let mut job = Job::open(video, output_dir)?;
     let (target_code, target_name) = clean_target(target);
     job.target = target_code.into();
+    let choice = crate::choice_path(app)
+        .ok()
+        .map(|path| crate::read_choice(&path))
+        .unwrap_or_default();
+    // Báo ngay khi DeepSeek local chưa chạy, trước khi chép lời hay ghi gì vào folder việc.
+    crate::ollama::require_deepseek_local(&choice, skip_translate)?;
     let voice = if text_only {
         crate::selected_voice(app, target_code).unwrap_or_default()
     } else {
@@ -324,10 +330,6 @@ pub(crate) fn run_watch(
             "Đang chép đoạn đầu",
             text_only,
         )?;
-        let choice = crate::choice_path(app)
-            .ok()
-            .map(|path| crate::read_choice(&path))
-            .unwrap_or_default();
         let saved = read_json::<Vec<TranslatedLine>>(&job.translation_path()).unwrap_or_default();
         let mut state = Accum {
             lines: Vec::new(),

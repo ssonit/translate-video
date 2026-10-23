@@ -561,6 +561,10 @@ fn request(
             json,
         )
         .map(|text| (text, LocalTimings::default())),
+        "deepseek-local" => {
+            deepseek_local_request(model_or(&choice.model, DEEPSEEK_LOCAL_MODEL), prompt, json)
+                .map(|text| (text, LocalTimings::default()))
+        }
         _ => Err("Không rõ dịch vụ.".into()),
     }
 }
@@ -579,6 +583,8 @@ pub(crate) const OPENAI_MODEL: &str = "gpt-4o-mini";
 pub(crate) const CLAUDE_MODEL: &str = "claude-haiku-4-5-20251001";
 pub(crate) const GEMINI_MODEL: &str = "gemini-3.8-flash";
 pub(crate) const DEEPSEEK_MODEL: &str = "deepseek-flash";
+/// Model của server Deepseek-API trên máy. Tên khác API trả phí, hai bên không dùng chung.
+pub(crate) const DEEPSEEK_LOCAL_MODEL: &str = "deepseek-chat";
 
 /// Đoạn nghe khoảng 1.000 từ. Trần này cho bản dịch cả đoạn, mọi dịch vụ, khỏi cắt giữa chừng.
 const PROSE_MAX_TOKENS: u32 = 8192;
@@ -832,6 +838,207 @@ fn deepseek_request(
         .as_str()
         .map(str::to_string)
         .ok_or_else(|| "DeepSeek không trả lời.".into())
+}
+
+/// DeepSeek local: server Deepseek-API trên máy, dùng tài khoản chat.deepseek.com, không cần API key.
+/// Khác API trả phí ở URL, tên model và tham số, nên có đường gọi riêng.
+pub(crate) const DEEPSEEK_LOCAL_URL: &str = "http://127.0.0.1:8000/v1/chat/completions";
+pub(crate) const DEEPSEEK_LOCAL_HEALTH_URL: &str = "http://127.0.0.1:8000/healthz";
+
+fn deepseek_local_payload(model: &str, prompt: &str, _json: bool) -> Value {
+    // Server bỏ max_tokens và response_format. thinking là bool. Prompt đã yêu cầu JSON.
+    serde_json::json!({
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "stream": false,
+        "thinking": false,
+        "search": false,
+    })
+}
+
+const DEEPSEEK_LOCAL_TIMEOUT: Duration = Duration::from_secs(300);
+
+fn deepseek_local_agent() -> &'static ureq::Agent {
+    static AGENT: std::sync::OnceLock<ureq::Agent> = std::sync::OnceLock::new();
+    AGENT.get_or_init(|| {
+        ureq::AgentBuilder::new()
+            .timeout(DEEPSEEK_LOCAL_TIMEOUT)
+            .build()
+    })
+}
+
+pub(crate) fn deepseek_local_up() -> bool {
+    deepseek_local_health(std::time::Duration::from_secs(2))
+}
+
+pub(crate) fn deepseek_local_up_fast() -> bool {
+    deepseek_local_health(std::time::Duration::from_millis(800))
+}
+
+fn deepseek_local_health(timeout: std::time::Duration) -> bool {
+    ureq::AgentBuilder::new()
+        .timeout(timeout)
+        .build()
+        .get(DEEPSEEK_LOCAL_HEALTH_URL)
+        .call()
+        .is_ok()
+}
+
+pub(crate) const DEEPSEEK_LOCAL_DOWN: &str =
+    "Chưa bật DeepSeek local. Bấm Bật DeepSeek ở ô Dịch bằng hoặc ở Đồ nghề, rồi chạy lại.";
+
+/// True khi lượt này sẽ gọi server DeepSeek local. Không dịch thì không cần server.
+pub(crate) fn needs_deepseek_local(choice: &TranslationChoice, skip_translate: bool) -> bool {
+    choice.provider == "deepseek-local" && !skip_translate
+}
+
+/// Hỏi server trước khi tách tiếng và chép lời. Không hỏi thì lỗi chỉ hiện sau khi Whisper chạy xong.
+pub(crate) fn require_deepseek_local(
+    choice: &TranslationChoice,
+    skip_translate: bool,
+) -> Result<(), String> {
+    if needs_deepseek_local(choice, skip_translate) && !deepseek_local_up() {
+        return Err(DEEPSEEK_LOCAL_DOWN.into());
+    }
+    Ok(())
+}
+
+fn deepseek_local_request(model: &str, prompt: &str, json: bool) -> Result<String, String> {
+    let payload = deepseek_local_payload(model, prompt, json);
+    let text = serde_json::to_string(&payload).map_err(|error| error.to_string())?;
+    let waits = [1u64, 2, 4];
+    let mut attempt = 0u8;
+    let response = loop {
+        match deepseek_local_agent()
+            .post(DEEPSEEK_LOCAL_URL)
+            .set("Content-Type", "application/json")
+            .send_string(&text)
+        {
+            Ok(response) => break response,
+            Err(ureq::Error::Status(code, response)) => {
+                let retry_after = response
+                    .header("retry-after")
+                    .and_then(|value| value.trim().parse::<u64>().ok());
+                let body = response.into_string().unwrap_or_default();
+                if code == 404 {
+                    return Err(format!(
+                        "Model {model} không có trên Deepseek-API. Dùng deepseek-chat hoặc deepseek-expert."
+                    ));
+                }
+                if code == 503 && login_required(&body) {
+                    return Err(
+                        "Chưa đăng nhập DeepSeek. Trong thư mục Deepseek-API chạy: python -m deepseek.auth"
+                            .into(),
+                    );
+                }
+                if code == 429 {
+                    let wait = retry_after
+                        .or_else(|| waits.get(attempt as usize).copied())
+                        .unwrap_or(4)
+                        .min(60);
+                    attempt += 1;
+                    if attempt > 3 {
+                        return Err(
+                            "DeepSeek trên máy đang giới hạn số lần gọi. Chờ một phút rồi chạy lại."
+                                .into(),
+                        );
+                    }
+                    std::thread::sleep(std::time::Duration::from_secs(wait));
+                    continue;
+                }
+                return Err(format!(
+                    "DeepSeek trên máy {code}: {}",
+                    deepseek_local_error_text(&body)
+                ));
+            }
+            Err(ureq::Error::Transport(error)) => {
+                return Err(deepseek_local_transport_message(
+                    error.kind(),
+                    io_kind(&error),
+                ));
+            }
+        }
+    };
+    let body = response.into_string().map_err(|error| error.to_string())?;
+    let parsed: Value =
+        serde_json::from_str(&body).map_err(|_| "Phản hồi không phải JSON.".to_string())?;
+    parsed["choices"][0]["message"]["content"]
+        .as_str()
+        .map(strip_think)
+        .filter(|text| !text.is_empty())
+        .ok_or_else(|| "DeepSeek trên máy không trả lời.".into())
+}
+
+fn io_kind(error: &ureq::Transport) -> Option<std::io::ErrorKind> {
+    use std::error::Error;
+    error
+        .source()
+        .and_then(|source| source.downcast_ref::<std::io::Error>())
+        .map(|io| io.kind())
+}
+
+/// Từ chối kết nối nghĩa là server chưa nghe. Hết giờ đọc thì server vẫn đang chạy,
+/// thường là cửa sổ đăng nhập hoặc deepseek-expert chưa trả lời.
+fn deepseek_local_transport_message(
+    kind: ureq::ErrorKind,
+    io_kind: Option<std::io::ErrorKind>,
+) -> String {
+    if kind == ureq::ErrorKind::Io && io_kind == Some(std::io::ErrorKind::TimedOut) {
+        let minutes = DEEPSEEK_LOCAL_TIMEOUT.as_secs() / 60;
+        return format!(
+            "Hết {minutes} phút mà DeepSeek chưa trả lời. Nếu cửa sổ đăng nhập đang mở thì đăng nhập xong rồi chạy lại."
+        );
+    }
+    if kind == ureq::ErrorKind::ConnectionFailed
+        || io_kind == Some(std::io::ErrorKind::ConnectionRefused)
+    {
+        return DEEPSEEK_LOCAL_DOWN.into();
+    }
+    if matches!(
+        io_kind,
+        Some(std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted)
+    ) {
+        return "Mất kết nối tới DeepSeek lúc đang gọi. Chạy lại.".into();
+    }
+    "Không gọi được DeepSeek trên máy.".into()
+}
+
+fn login_required(body: &str) -> bool {
+    let lowered = body.to_ascii_lowercase();
+    lowered.contains("login_required")
+        || lowered.contains("no deepseek session")
+        || lowered.contains("log in first")
+}
+
+fn deepseek_local_error_text(body: &str) -> String {
+    serde_json::from_str::<Value>(body)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("error")
+                .and_then(|error| error.get("message"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .filter(|text| !text.trim().is_empty())
+        .unwrap_or_else(|| brief(body))
+}
+
+fn strip_think(text: &str) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(start) = rest.find("<think>") {
+        out.push_str(&rest[..start]);
+        rest = &rest[start + "<think>".len()..];
+        if let Some(end) = rest.find("</think>") {
+            rest = &rest[end + "</think>".len()..];
+        } else {
+            rest = "";
+            break;
+        }
+    }
+    out.push_str(rest);
+    out.trim().to_string()
 }
 
 fn openai_payload(model: &str, prompt: &str, json: bool) -> Value {
@@ -1355,6 +1562,68 @@ mod tests {
     }
 
     #[test]
+    fn deepseek_local_talks_to_the_local_server_and_skips_thinking() {
+        let payload = deepseek_local_payload("deepseek-chat", "dịch câu này", true);
+        assert_eq!(payload["model"], "deepseek-chat");
+        assert!(payload.get("response_format").is_none());
+        assert!(payload.get("max_tokens").is_none());
+        assert_eq!(payload["thinking"], false);
+        assert_eq!(payload["search"], false);
+        assert_eq!(payload["stream"], false);
+        assert_eq!(payload["messages"][0]["content"], "dịch câu này");
+        assert_eq!(
+            DEEPSEEK_LOCAL_URL,
+            "http://127.0.0.1:8000/v1/chat/completions"
+        );
+        assert_eq!(DEEPSEEK_LOCAL_HEALTH_URL, "http://127.0.0.1:8000/healthz");
+        assert_eq!(DEEPSEEK_LOCAL_MODEL, "deepseek-chat");
+        // Hai đường DeepSeek không dùng chung URL hay tên model.
+        assert_ne!(DEEPSEEK_URL, DEEPSEEK_LOCAL_URL);
+        assert_ne!(DEEPSEEK_MODEL, DEEPSEEK_LOCAL_MODEL);
+        assert!(DEEPSEEK_LOCAL_URL.starts_with("http://127.0.0.1:"));
+        assert_eq!(strip_think("  <think>suy</think>Xin chào  "), "Xin chào");
+        let down = deepseek_local_transport_message(
+            ureq::ErrorKind::ConnectionFailed,
+            Some(std::io::ErrorKind::ConnectionRefused),
+        );
+        assert!(down.contains("Bật DeepSeek"));
+        assert_eq!(down, DEEPSEEK_LOCAL_DOWN);
+        let timed_out = deepseek_local_transport_message(
+            ureq::ErrorKind::Io,
+            Some(std::io::ErrorKind::TimedOut),
+        );
+        assert!(timed_out.contains("5 phút"));
+        assert!(timed_out.contains("đăng nhập"));
+        assert!(!timed_out.contains("Chưa chạy"));
+        let reset = deepseek_local_transport_message(
+            ureq::ErrorKind::Io,
+            Some(std::io::ErrorKind::ConnectionReset),
+        );
+        assert!(reset.contains("Mất kết nối"));
+    }
+
+    #[test]
+    fn only_a_translating_deepseek_local_run_needs_the_server() {
+        let choice = |provider: &str| TranslationChoice {
+            provider: provider.into(),
+            api_key: String::new(),
+            model: String::new(),
+            saved: Default::default(),
+        };
+        assert!(needs_deepseek_local(&choice("deepseek-local"), false));
+        // Không dịch, chỉ đổi giọng: không gọi AI nên không cần server.
+        assert!(!needs_deepseek_local(&choice("deepseek-local"), true));
+        for other in ["local", "deepseek", "gemini", "openai", "claude"] {
+            assert!(!needs_deepseek_local(&choice(other), false), "{other}");
+        }
+        // Các trường hợp này không hỏi server, nên kết quả không phụ thuộc cổng 8000 trên máy chạy test.
+        assert!(require_deepseek_local(&choice("deepseek"), false).is_ok());
+        assert!(require_deepseek_local(&choice("deepseek-local"), true).is_ok());
+        assert!(DEEPSEEK_LOCAL_DOWN.contains("Bật DeepSeek"));
+        assert!(DEEPSEEK_LOCAL_DOWN.contains("Đồ nghề"));
+    }
+
+    #[test]
     fn local_endpoint_stays_on_this_machine() {
         assert!(LOCAL_URL.starts_with("http://127.0.0.1:11434"));
         assert_eq!(LOCAL_MODEL, "qwen3.5:9b-q4_K_M");
@@ -1434,6 +1703,14 @@ mod tests {
         let deepseek_json = deepseek_payload("deepseek-flash", "đoạn", true);
         assert_eq!(deepseek_json["max_tokens"], PROSE_MAX_TOKENS);
         assert_eq!(deepseek_json["response_format"]["type"], "json_object");
+
+        let deepseek_local = deepseek_local_payload("deepseek-chat", "đoạn", false);
+        assert!(deepseek_local.get("response_format").is_none());
+        assert_eq!(deepseek_local["thinking"], false);
+        assert_eq!(deepseek_local["search"], false);
+        let deepseek_local_json = deepseek_local_payload("deepseek-chat", "đoạn", true);
+        assert!(deepseek_local_json.get("response_format").is_none());
+        assert!(deepseek_local_json.get("max_tokens").is_none());
 
         let local = ollama_payload(LOCAL_MODEL, "đoạn", false);
         assert!(local.get("format").is_none());

@@ -1,4 +1,6 @@
 import ListenPart from "./ListenPart";
+import { SetupChip } from "./SetupChip";
+import { lockNote, type SetupSummary } from "./setupStatus";
 import WatchLive from "./WatchLive";
 import { AgainPane } from "./work/againPane";
 import { Composer } from "./work/composer";
@@ -19,20 +21,26 @@ export default function Work({
   installed,
   modelListNote,
   prefsEpoch,
+  setup,
   onSetup,
+  onChanged,
   onBusy,
   onReloadModels,
 }: {
   installed: string[] | null;
   modelListNote: string;
   prefsEpoch: number;
+  setup: SetupSummary;
   onSetup: () => void;
+  // Đổi dịch vụ, key hay Không dịch làm kết quả kiểm tra máy đổi theo, nên xin App kiểm tra lại.
+  onChanged: () => void;
   onBusy: (text: string) => void;
   onReloadModels: () => void;
 }) {
   const s = useWorkState();
   const job = jobActions(s);
   const play = playbackActions(s);
+  const lock = lockNote(setup);
   const shown = s.playingKept || s.listenFile || s.result;
   const busyText = s.running
     ? s.downloading
@@ -95,9 +103,7 @@ export default function Work({
             <button type="button" className={s.view === "settings" ? "link is-on" : "link"} onClick={() => s.setView("settings")}>
               Cài đặt
             </button>
-            <button type="button" className="link" onClick={onSetup}>
-              Đồ nghề
-            </button>
+            <SetupChip summary={setup} onClick={onSetup} />
           </div>
         </div>
       </header>
@@ -308,6 +314,8 @@ export default function Work({
               onNames={(root) => void play.openNames(root)}
               onLeave={() => s.setView("new")}
               onResume={(item) => void job.resume(item)}
+              lock={lock}
+              onTools={onSetup}
             />
           ) : null}
 
@@ -324,7 +332,7 @@ export default function Work({
               textOnly={s.textOnly}
               onTextOnly={job.chooseTextOnly}
               skipTranslate={s.skipTranslate}
-              onSkip={(on) => void job.chooseSkip(on)}
+              onSkip={(on) => void job.chooseSkip(on).then(onChanged)}
               burnCaptions={s.burnCaptions}
               onBurn={(checked) => void job.chooseBurn(checked)}
               captioning={s.captioning}
@@ -332,10 +340,10 @@ export default function Work({
               folder={s.folder}
               pending={s.pending}
               provider={s.provider}
-              onProvider={(id) => void play.chooseProvider(id)}
+              onProvider={(id) => void play.chooseProvider(id).then(onChanged)}
               keyDraft={s.keyDraft}
               onKeyDraft={s.setKeyDraft}
-              onSaveKey={() => void play.saveKey()}
+              onSaveKey={() => void play.saveKey().then(onChanged)}
               model={s.model}
               onModel={s.setModel}
               customModel={s.customModel}
@@ -363,6 +371,9 @@ export default function Work({
               onDrop={job.dropQueued}
               onRun={() => void job.run()}
               onLive={() => void job.runLive()}
+              lock={lock}
+              onTools={onSetup}
+              onChanged={onChanged}
             />
           ) : null}
         </section>

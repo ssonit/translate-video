@@ -1,6 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { GUIDES } from "./guides.ts";
+import { DEEPSEEK_LOCAL_STEPS, GUIDES } from "./guides.ts";
+
+test("model guide offers DeepSeek API with a key and DeepSeek local without one", () => {
+  const model = GUIDES.find((guide) => guide.id === "model");
+  assert.ok(model?.clouds);
+  const api = model.clouds.find((cloud) => cloud.id === "deepseek");
+  const local = model.clouds.find((cloud) => cloud.id === "deepseek-local");
+  assert.ok(api?.keyUrl?.includes("platform.deepseek.com"));
+  assert.ok(local);
+  assert.equal(local.keyUrl, undefined);
+  assert.notEqual(api.name, local.name);
+  assert.match(DEEPSEEK_LOCAL_STEPS.join("\n"), /127\.0\.0\.1:8000/);
+});
 
 test("whisper guide keeps one slot and explains the GPU model", () => {
   const whisper = GUIDES.find((guide) => guide.id === "whisper");

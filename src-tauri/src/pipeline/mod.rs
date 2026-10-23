@@ -208,6 +208,12 @@ pub(crate) fn run(
     let mut job = Job::open(video, output_dir)?;
     let (target_code, target_name) = clean_target(target);
     job.target = target_code.into();
+    let choice = crate::choice_path(app)
+        .ok()
+        .map(|path| crate::read_choice(&path))
+        .unwrap_or_default();
+    // Báo ngay khi DeepSeek local chưa chạy, trước khi xóa bản cũ hay tốn thời gian chép lời.
+    crate::ollama::require_deepseek_local(&choice, skip_translate)?;
     if redo {
         drop_translation(&job);
     }
@@ -229,10 +235,6 @@ pub(crate) fn run(
             text_only,
         },
     );
-    let choice = crate::choice_path(app)
-        .ok()
-        .map(|path| crate::read_choice(&path))
-        .unwrap_or_default();
     require_tool("ffmpeg")?;
     require_tool("ffprobe")?;
     stopped(cancel)?;
