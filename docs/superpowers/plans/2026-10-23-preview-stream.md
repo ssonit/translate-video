@@ -8,7 +8,7 @@
 
 **Tech Stack:** Tauri 2, Rust, React, Piper ONNX trong Web Worker (`src/tts`). Không thêm crate, không tải model, không IndexedDB.
 
-**Spec:** `tao-audio-streaming.md`
+**Spec:** `docs/superpowers/specs/2026-10-23-preview-stream-design.md`
 
 ## Global Constraints
 
