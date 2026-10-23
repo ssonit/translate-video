@@ -1,0 +1,165 @@
+import { fold, jobFolder, languageName, openJobFolder, plainVideo, sameFile, when } from "./format";
+import type { FinishedDub, View } from "./types";
+
+export function Library({
+  view,
+  queueCount,
+  query,
+  onQuery,
+  onNew,
+  showLiveCard,
+  liveTitle,
+  liveDetail,
+  liveFraction,
+  returnPreview,
+  previewLabel,
+  onProgress,
+  onLive,
+  dubs,
+  note,
+  removing,
+  result,
+  draft,
+  captioning,
+  isLive,
+  isPreview,
+  onOpenDone,
+  onOpenDraft,
+  onRemove,
+}: {
+  view: View;
+  queueCount: number;
+  query: string;
+  onQuery: (value: string) => void;
+  onNew: () => void;
+  showLiveCard: boolean;
+  liveTitle: string;
+  liveDetail: string;
+  liveFraction: number | null;
+  returnPreview: boolean;
+  previewLabel: string;
+  onProgress: () => void;
+  onLive: () => void;
+  dubs: FinishedDub[];
+  note: string;
+  removing: string;
+  result: string;
+  draft: FinishedDub | null;
+  captioning: boolean;
+  isLive: (item: FinishedDub) => boolean;
+  isPreview: (item: FinishedDub) => boolean;
+  onOpenDone: (item: FinishedDub) => void;
+  onOpenDraft: (item: FinishedDub) => void;
+  onRemove: (item: FinishedDub) => void;
+}) {
+  const listNeedle = fold(query.trim());
+  const visible = listNeedle
+    ? dubs.filter((item) => fold(`${item.title} ${languageName(item.language)}`).includes(listNeedle))
+    : dubs;
+  const liveOn = view === "progress" || (returnPreview && view === "live");
+
+  return (
+    <aside className="library">
+      <label className="library-find">
+        <span className="library-find-label">Tìm video</span>
+        <input type="search" value={query} placeholder="Tìm theo tên" onChange={(event) => onQuery(event.target.value)} />
+      </label>
+      <div className={view === "new" ? "lib-item is-on library-pin" : "lib-item library-pin"}>
+        <button type="button" className="row" onClick={onNew}>
+          <span>
+            <strong>Video mới</strong>
+            <em>{queueCount > 0 ? `${queueCount} video đang chờ` : "Chọn nguồn và chạy"}</em>
+          </span>
+        </button>
+      </div>
+      <div className="library-scroll">
+        {showLiveCard ? (
+          <div className={liveOn ? "lib-item is-on" : "lib-item"}>
+            <button type="button" className="row" onClick={onProgress}>
+              <span>
+                <strong>{liveTitle}</strong>
+                <em title={liveDetail}>
+                  {liveDetail}
+                  {liveFraction !== null ? ` · ${Math.round(liveFraction * 100)}%` : ""}
+                </em>
+                {liveFraction !== null ? (
+                  <span className="mini" aria-hidden="true">
+                    <i style={{ width: `${liveFraction * 100}%` }} />
+                  </span>
+                ) : null}
+              </span>
+            </button>
+            {returnPreview ? (
+              <button type="button" className="row-back" onClick={onLive}>
+                {previewLabel}
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+        {visible.map((item) => {
+          const live = isLive(item);
+          const back = isPreview(item);
+          const selected =
+            (item.done && view === "watch" && sameFile(item.path, plainVideo(result))) ||
+            (!item.done && view === "resume" && draft?.path === item.path) ||
+            (live && view === "progress") ||
+            (back && (view === "live" || view === "progress"));
+          const writing = live || (captioning && sameFile(jobFolder(item), openJobFolder(result)));
+          const openItem = () => {
+            if (!item.done) {
+              if (live || back) {
+                onProgress();
+                return;
+              }
+              onOpenDraft(item);
+              return;
+            }
+            onOpenDone(item);
+          };
+          return (
+            <div key={item.path} className={selected ? "lib-item is-on" : "lib-item"}>
+              <button type="button" className="row" onClick={openItem}>
+                <span>
+                  <strong>{item.title}</strong>
+                  <em title={live ? liveDetail : undefined}>
+                    {item.done
+                      ? [item.audio ? "chỉ audio" : "", item.language ? languageName(item.language) : "", item.captioned ? "có chữ" : "", when(item.modifiedMs)]
+                          .filter(Boolean)
+                          .join(" · ")
+                      : live
+                        ? `${liveDetail}${liveFraction !== null ? ` · ${Math.round(liveFraction * 100)}%` : ""}`
+                        : "Chưa xong"}
+                  </em>
+                  {live && liveFraction !== null ? (
+                    <span className="mini" aria-hidden="true">
+                      <i style={{ width: `${liveFraction * 100}%` }} />
+                    </span>
+                  ) : null}
+                </span>
+              </button>
+              {back ? (
+                <button type="button" className="row-back" onClick={onLive}>
+                  {previewLabel}
+                </button>
+              ) : null}
+              {writing ? null : (
+                <button
+                  type="button"
+                  className="row-x"
+                  aria-label={`Xóa ${item.title}`}
+                  disabled={removing === item.path}
+                  onClick={() => void onRemove(item)}
+                >
+                  {removing === item.path ? "…" : "Xóa"}
+                </button>
+              )}
+            </div>
+          );
+        })}
+        {dubs.length === 0 && !showLiveCard ? <p className="library-empty">Folder này chưa có video.</p> : null}
+        {dubs.length > 0 && visible.length === 0 ? <p className="library-empty">Không thấy video khớp.</p> : null}
+        {note ? <p className="error library-note">{note}</p> : null}
+      </div>
+    </aside>
+  );
+}

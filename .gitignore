@@ -1,0 +1,46 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Dub results
+output
+
+# Local GPU weights and one-off timing files
+whisper/large-v3-turbo/
+whisper/*.bin
+whisper/*.zip
+.bench-asr/
+
+# Piper voice weights (~60 MB each; GitHub warns above 50 MB)
+voices/**/*.onnx
+
+# Local agent config (may contain API keys)
+.claude/
+.superpowers/
+
+# Separate checkout, not part of this app
+VideoLingo/
+
+__pycache__/
+*.pyc

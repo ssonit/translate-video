@@ -1,0 +1,296 @@
+import { convertFileSrc } from "@tauri-apps/api/core";
+import type { RefObject } from "react";
+import { showListenStop } from "../listenStop";
+import {
+  captionedVideo,
+  fileName,
+  isAudio,
+  isCaptioned,
+  isListen,
+  showAsTextOnly,
+  watchHeading,
+  keptLabel,
+  languageName,
+  parentFolder,
+  plainVideo,
+  sameFile,
+} from "./format";
+import { ResultMedia } from "./media";
+import { DubScript } from "./script";
+import type { FinishedDub, KeptVersion, LinePick, ScriptLine } from "./types";
+
+export function WatchPane({
+  shown,
+  result,
+  playingKept,
+  listenFile,
+  lines,
+  joining,
+  joinProgress,
+  playable,
+  resultEpoch,
+  mediaRef,
+  kept,
+  watched,
+  savingAudio,
+  running,
+  downloading,
+  captioning,
+  captionProgress,
+  textReady,
+  textOnlyRun,
+  openNote,
+  captionNote,
+  error,
+  picks,
+  onPicks,
+  onPlayCurrent,
+  onPlayKept,
+  onDeleteKept,
+  onOpen,
+  onFetchVideo,
+  onDownloadAudio,
+  onJoin,
+  onShowVideo,
+  onStop,
+  onAddCaptions,
+  onAgain,
+  onShowResult,
+  onRetake,
+}: {
+  shown: string;
+  result: string;
+  playingKept: string;
+  listenFile: string;
+  lines: ScriptLine[];
+  joining: boolean;
+  joinProgress: number | null;
+  playable: boolean;
+  resultEpoch: number;
+  mediaRef: RefObject<HTMLMediaElement | null>;
+  kept: KeptVersion[];
+  watched: FinishedDub | undefined;
+  savingAudio: boolean;
+  running: boolean;
+  downloading: boolean;
+  captioning: boolean;
+  captionProgress: number | null;
+  textReady: boolean;
+  textOnlyRun: boolean;
+  openNote: string;
+  captionNote: string;
+  error: string;
+  picks: Record<number, LinePick>;
+  onPicks: (picks: Record<number, LinePick>) => void;
+  onPlayCurrent: () => void;
+  onPlayKept: (path: string) => void;
+  onDeleteKept: (item: KeptVersion) => void;
+  onOpen: (path: string) => void;
+  onFetchVideo: () => void;
+  onDownloadAudio: () => void;
+  onJoin: () => void;
+  onShowVideo: () => void;
+  onStop: () => void;
+  onAddCaptions: () => void;
+  onAgain: () => void;
+  onShowResult: (path: string) => void;
+  onRetake: (edits: { index: number; text: string }[]) => void;
+}) {
+  const src = resultEpoch > 0 ? `${convertFileSrc(shown)}?v=${resultEpoch}` : convertFileSrc(shown);
+  const textOnly = showAsTextOnly(result, watched?.path ?? "", textOnlyRun);
+  return (
+    <div
+      className={["pane-fill watch", !playingKept && lines.length > 0 ? "has-script" : "", isAudio(shown) ? "is-audio" : "", joining ? "is-joining" : ""]
+        .filter(Boolean)
+        .join(" ")}
+    >
+      <div className="result-head">
+        <strong>
+          {playingKept
+            ? "Bản đã cất"
+            : listenFile
+              ? "Audio liền mạch"
+              : isAudio(result)
+                ? "Audio bản dịch"
+                : watchHeading(result, watched?.path ?? "", textOnlyRun)}
+        </strong>
+        <span title={shown}>{watched?.title || fileName(isAudio(shown) ? shown : plainVideo(shown))}</span>
+      </div>
+      <div className="versions">
+        <div className="version-row">
+          <button type="button" className={playingKept ? "link" : "link is-on"} onClick={onPlayCurrent}>
+            Đang dùng{watched?.language ? ` · ${languageName(watched.language)}` : ""}
+          </button>
+        </div>
+        {kept.map((item) => (
+          <div key={item.path} className="version-row">
+            <button
+              type="button"
+              className={sameFile(playingKept, item.path) ? "link is-on" : "link"}
+              onClick={() => onPlayKept(item.path)}
+            >
+              {keptLabel(item)}
+            </button>
+            <button type="button" className="link" onClick={() => void onDeleteKept(item)}>
+              Xóa
+            </button>
+          </div>
+        ))}
+      </div>
+      {playable ? (
+        isAudio(shown) ? (
+          <ResultMedia key={`${shown}:${resultEpoch}`} kind="audio" src={src} mediaRef={mediaRef} />
+        ) : (
+          <div className="player-slot">
+            <ResultMedia key={`${shown}:${resultEpoch}`} kind="video" src={src} mediaRef={mediaRef} />
+          </div>
+        )
+      ) : (
+        <p className="library-empty">
+          {isAudio(shown) ? "Dùng nút bên dưới nếu chưa nghe được." : "Dùng nút bên dưới nếu khung video còn trống."}
+        </p>
+      )}
+      <div className="result-bar">
+        <div className="result-actions">
+          {playingKept ? (
+            <>
+              <div className="result-primary">
+                <button type="button" className="check" onClick={() => void onOpen(playingKept)}>
+                  Mở bằng trình phát
+                </button>
+              </div>
+              <div className="result-tools">
+                <button type="button" className="link" onClick={() => void onOpen(parentFolder(playingKept))}>
+                  Mở folder
+                </button>
+                <button
+                  type="button"
+                  className="link"
+                  onClick={() => {
+                    const item = kept.find((row) => sameFile(row.path, playingKept));
+                    if (item) void onDeleteKept(item);
+                  }}
+                >
+                  Xóa bản này
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="result-primary">
+                {isAudio(result) && watched?.url ? (
+                  <button type="button" className="check" onClick={() => void onFetchVideo()} disabled={running || downloading}>
+                    Tải video
+                  </button>
+                ) : null}
+                {isAudio(result) ? (
+                  <button type="button" className="check" onClick={() => void onDownloadAudio()} disabled={savingAudio || running}>
+                    {savingAudio ? "Đang xuất audio…" : "Tải audio"}
+                  </button>
+                ) : textOnly ? null : (
+                  <button
+                    type="button"
+                    className="check"
+                    onClick={() => void (listenFile ? onShowVideo() : onJoin())}
+                    disabled={joining || running}
+                  >
+                    {joining
+                      ? joinProgress === null
+                        ? "Đang đọc liền mạch…"
+                        : `Đang đọc liền mạch… ${Math.round(joinProgress * 100)}%`
+                      : listenFile
+                        ? "Xem video"
+                        : "Nghe liền mạch"}
+                  </button>
+                )}
+                {showListenStop(joining) ? (
+                  <button type="button" className="link" onClick={() => void onStop()}>
+                    Dừng
+                  </button>
+                ) : null}
+                {isAudio(result) ? null : (
+                  <button type="button" className="check" onClick={() => void onOpen(listenFile || result)} disabled={joining}>
+                    Mở bằng trình phát
+                  </button>
+                )}
+                {isAudio(result) || listenFile || captioning || textReady ? null : (
+                  <button type="button" className="check" onClick={() => void onAddCaptions()} disabled={running}>
+                    Thêm chữ vào video
+                  </button>
+                )}
+                {captioning ? (
+                  <>
+                    <span className="caption-wait">
+                      {captionProgress === null ? "Đang ghi chữ…" : `Đang ghi chữ… ${Math.round(captionProgress * 100)}%`}
+                    </span>
+                    <button type="button" className="link" onClick={() => void onStop()}>
+                      Dừng
+                    </button>
+                  </>
+                ) : null}
+                <button type="button" className="link result-again" onClick={() => void onAgain()} disabled={running || joining}>
+                  Làm lại
+                </button>
+              </div>
+              <div className="result-tools">
+                {isAudio(result) ? (
+                  <button type="button" className="link" onClick={() => void onOpen(result)}>
+                    Mở bằng trình phát
+                  </button>
+                ) : textOnly ? null : (
+                  <button
+                    type="button"
+                    className="link"
+                    onClick={() => void onDownloadAudio()}
+                    disabled={savingAudio || running || joining}
+                  >
+                    {savingAudio ? "Đang xuất audio…" : "Tải audio"}
+                  </button>
+                )}
+                <button type="button" className="link" onClick={() => void onOpen(parentFolder(result))}>
+                  Mở folder
+                </button>
+                <button
+                  type="button"
+                  className="link"
+                  onClick={() =>
+                    void onOpen(
+                      (isListen(shown) ? shown : isAudio(result) ? result : plainVideo(result)).replace(/\.(mp4|m4a)$/i, ".srt"),
+                    )
+                  }
+                >
+                  Mở phụ đề .srt
+                </button>
+                {isAudio(result) || !textReady || textOnly ? null : (
+                  <button
+                    type="button"
+                    className="link"
+                    onClick={() => onShowResult(isCaptioned(result) ? plainVideo(result) : captionedVideo(result))}
+                  >
+                    {isCaptioned(result) ? "Xem bản không chữ" : "Xem bản có chữ"}
+                  </button>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+        {openNote ? <p className="error">{openNote}</p> : null}
+        {captionNote ? <p className="error">{captionNote}</p> : null}
+        {error ? <p className="error">{error}</p> : null}
+      </div>
+      {!playingKept && lines.length > 0 ? (
+        <DubScript
+          lines={lines}
+          videoRef={mediaRef}
+          playable={playable}
+          picks={picks}
+          onPicks={onPicks}
+          audioOnly={isAudio(result)}
+          captionsOnly={textOnly}
+          busy={running}
+          onRetake={onRetake}
+        />
+      ) : null}
+    </div>
+  );
+}
