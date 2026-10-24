@@ -50,6 +50,16 @@ export type FinishedDub = {
   url?: string;
 };
 
+// Vài con số và câu đầu của một việc dở, để thẻ việc dở cho người dùng nhớ đó là video nào (lệnh draft_brief).
+export type DraftBrief = {
+  heard: number;
+  translated: number;
+  spoken: number;
+  textOnly: boolean;
+  excerpt: string[];
+  excerptTranslated: boolean;
+};
+
 export type KeptVersion = {
   path: string;
   language: string;

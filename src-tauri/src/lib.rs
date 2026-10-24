@@ -1956,6 +1956,12 @@ fn confirm_names(
         .map_err(|_| "Lượt này đã dừng.".to_string())
 }
 
+// Vài con số và câu đầu của một việc dở, để thẻ việc dở cho người dùng nhớ đó là video nào.
+#[tauri::command]
+fn draft_brief(path: String) -> Result<job::DraftBrief, String> {
+    job::draft_brief(Path::new(&path))
+}
+
 #[tauri::command]
 fn read_names(root: String) -> Result<names::NameList, String> {
     let root = PathBuf::from(&root);
@@ -2056,6 +2062,7 @@ pub fn run() {
             save_dub_audio,
             list_dubs,
             list_kept,
+            draft_brief,
             delete_kept_version,
             finished_result,
             delete_dub,

@@ -159,7 +159,7 @@ impl Job {
     }
 
     pub(crate) fn line_wav(&self, index: usize) -> PathBuf {
-        self.root.join("lines").join(format!("{index:03}.wav"))
+        line_wav_path(&self.root, index)
     }
 
     pub(crate) fn fit_report(&self) -> PathBuf {
@@ -190,6 +190,11 @@ impl Job {
     pub(crate) fn captioned(&self) -> PathBuf {
         captioned_path(&self.result())
     }
+}
+
+// Giọng đọc của câu thứ `index` (đếm từ 1) trong folder việc `root`.
+fn line_wav_path(root: &Path, index: usize) -> PathBuf {
+    root.join("lines").join(format!("{index:03}.wav"))
 }
 
 // File đốt chữ nằm cạnh video kết quả: `tap.vi.mp4` -> `tap.vi.chu.mp4`.
@@ -838,6 +843,70 @@ pub(crate) fn list_finished(output_dir: &Path) -> Result<Vec<FinishedDub>, Strin
     Ok(found)
 }
 
+// Vài con số và câu đầu của một việc dở, để thẻ việc dở cho người dùng nhớ đó là video nào.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DraftBrief {
+    pub heard: usize,
+    pub translated: usize,
+    pub spoken: usize,
+    pub text_only: bool,
+    pub excerpt: Vec<String>,
+    pub excerpt_translated: bool,
+}
+
+// Chỉ cần vài câu để nhớ video nói gì, không phải đọc cả bài.
+const BRIEF_LINES: usize = 3;
+
+pub(crate) fn draft_brief(root: &Path) -> Result<DraftBrief, String> {
+    if !job_started(root) {
+        return Err("Chưa thấy việc này.".into());
+    }
+    let cues = |name: &str| read_json::<Vec<Cue>>(&root.join(name)).ok();
+    let heard_lines = cues("lines.json")
+        .or_else(|| cues("transcript.json"))
+        .unwrap_or_default();
+    let done: Vec<TranslatedLine> = read_json(&root.join("translation.json")).unwrap_or_default();
+    // Câu đổi chữ bị xóa bản dịch, nên chỉ tính bản dịch còn chữ.
+    let translated_text = first_texts(done.iter().map(|line| line.translation.as_str()));
+    let translated = done
+        .iter()
+        .filter(|line| !line.translation.trim().is_empty())
+        .count();
+    let heard = heard_lines.len().max(done.len());
+    let spoken = (1..=heard)
+        .filter(|index| file_ready(&line_wav_path(root, *index)))
+        .count();
+    let (excerpt, excerpt_translated) = if translated_text.is_empty() {
+        (
+            first_texts(heard_lines.iter().map(|cue| cue.text.as_str())),
+            false,
+        )
+    } else {
+        (translated_text, true)
+    };
+    let text_only = read_json::<SavedFlags>(&root.join("settings.json"))
+        .map(|saved| saved.text_only)
+        .unwrap_or(false);
+    Ok(DraftBrief {
+        heard,
+        translated,
+        spoken,
+        text_only,
+        excerpt,
+        excerpt_translated,
+    })
+}
+
+fn first_texts<'a>(texts: impl Iterator<Item = &'a str>) -> Vec<String> {
+    texts
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .take(BRIEF_LINES)
+        .map(str::to_string)
+        .collect()
+}
+
 // Folder việc của một dòng trong danh sách: file kết quả thì lấy folder cha, việc dở thì chính đường dẫn đó.
 // Chỉ nhận folder con trực tiếp của folder kết quả. Không đụng file gốc và không đụng folder tải về.
 pub(crate) fn job_folder(output_dir: &Path, item_path: &Path) -> Result<PathBuf, String> {
@@ -1133,6 +1202,160 @@ mod tests {
         let script = read_script(Path::new(&finished.path)).unwrap();
         assert_eq!(script[0].translation, "Chào");
         assert!(list_finished(&dir.join("khong-co")).is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn heard_cues(texts: &[&str]) -> Vec<Cue> {
+        texts
+            .iter()
+            .enumerate()
+            .map(|(index, text)| Cue {
+                start: index as f64,
+                end: index as f64 + 0.9,
+                text: (*text).into(),
+            })
+            .collect()
+    }
+
+    fn translated_lines(pairs: &[(&str, &str)]) -> Vec<TranslatedLine> {
+        pairs
+            .iter()
+            .enumerate()
+            .map(|(index, (source, translation))| TranslatedLine {
+                start: index as f64,
+                end: index as f64 + 0.9,
+                source: (*source).into(),
+                translation: (*translation).into(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn draft_brief_counts_only_what_each_stage_really_finished() {
+        let dir = scratch("brief-counts");
+        let root = dir.join("tap do");
+        fs::create_dir_all(root.join("lines")).unwrap();
+        write_json(
+            &root.join("lines.json"),
+            &heard_cues(&["một", "hai", "ba", "bốn", "năm"]),
+        )
+        .unwrap();
+        // Câu đổi chữ bị xóa bản dịch (hoặc chỉ còn khoảng trắng) thì chưa tính là đã dịch.
+        write_json(
+            &root.join("translation.json"),
+            &translated_lines(&[
+                ("một", "one"),
+                ("hai", ""),
+                ("ba", "three"),
+                ("bốn", "   "),
+                ("năm", "five"),
+            ]),
+        )
+        .unwrap();
+        // 001 và 003 có tiếng, 002 rỗng, 007 nằm ngoài năm câu.
+        fs::write(root.join("lines").join("001.wav"), b"wav").unwrap();
+        fs::write(root.join("lines").join("002.wav"), b"").unwrap();
+        fs::write(root.join("lines").join("003.wav"), b"wav").unwrap();
+        fs::write(root.join("lines").join("007.wav"), b"wav").unwrap();
+        let brief = draft_brief(&root).unwrap();
+        assert_eq!(brief.heard, 5);
+        assert_eq!(brief.translated, 3);
+        assert_eq!(brief.spoken, 2);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn draft_brief_excerpt_is_the_first_translated_lines() {
+        let dir = scratch("brief-excerpt");
+        let root = dir.join("tap do");
+        fs::create_dir_all(&root).unwrap();
+        write_json(
+            &root.join("lines.json"),
+            &heard_cues(&["a", "b", "c", "d", "e"]),
+        )
+        .unwrap();
+        write_json(
+            &root.join("translation.json"),
+            &translated_lines(&[
+                ("a", "Xin chào"),
+                ("b", ""),
+                ("c", "  Tạm biệt  "),
+                ("d", "Cảm ơn"),
+                ("e", "Hẹn gặp lại"),
+            ]),
+        )
+        .unwrap();
+        let brief = draft_brief(&root).unwrap();
+        assert_eq!(brief.excerpt, vec!["Xin chào", "Tạm biệt", "Cảm ơn"]);
+        assert!(brief.excerpt_translated);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn draft_brief_excerpt_falls_back_to_the_heard_text_before_translation() {
+        let dir = scratch("brief-heard");
+        let root = dir.join("tap do");
+        fs::create_dir_all(&root).unwrap();
+        write_json(
+            &root.join("lines.json"),
+            &heard_cues(&["你好", " ", "再见"]),
+        )
+        .unwrap();
+        let brief = draft_brief(&root).unwrap();
+        assert_eq!((brief.heard, brief.translated), (3, 0));
+        assert_eq!(brief.excerpt, vec!["你好", "再见"]);
+        assert!(!brief.excerpt_translated);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn draft_brief_counts_the_whisper_transcript_before_lines_are_split() {
+        let dir = scratch("brief-transcript");
+        let root = dir.join("tap do");
+        fs::create_dir_all(&root).unwrap();
+        write_json(&root.join("transcript.json"), &heard_cues(&["một", "hai"])).unwrap();
+        let brief = draft_brief(&root).unwrap();
+        assert_eq!(brief.heard, 2);
+        assert_eq!(brief.excerpt, vec!["một", "hai"]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn draft_brief_knows_a_text_only_job() {
+        let dir = scratch("brief-text-only");
+        let root = dir.join("tap do");
+        fs::create_dir_all(&root).unwrap();
+        write_json(&root.join("lines.json"), &heard_cues(&["một"])).unwrap();
+        assert!(!draft_brief(&root).unwrap().text_only);
+        fs::write(
+            root.join("settings.json"),
+            br#"{"target":"vi","voice":"a","use_terms":false,"text_only":true}"#,
+        )
+        .unwrap();
+        assert!(draft_brief(&root).unwrap().text_only);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn draft_brief_of_a_job_that_only_extracted_audio_is_empty_but_valid() {
+        let dir = scratch("brief-audio");
+        let root = dir.join("tap do");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("audio.wav"), b"wav").unwrap();
+        let brief = draft_brief(&root).unwrap();
+        assert_eq!((brief.heard, brief.translated, brief.spoken), (0, 0, 0));
+        assert!(brief.excerpt.is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn draft_brief_refuses_a_folder_that_is_not_a_job() {
+        let dir = scratch("brief-none");
+        assert!(draft_brief(&dir.join("khong-co")).is_err());
+        let empty = dir.join("trong");
+        fs::create_dir_all(&empty).unwrap();
+        fs::write(empty.join("ghi-chu.txt"), b"x").unwrap();
+        assert!(draft_brief(&empty).is_err());
         let _ = fs::remove_dir_all(&dir);
     }
 

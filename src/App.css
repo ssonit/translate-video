@@ -1507,6 +1507,78 @@ select:disabled {
   margin-top: 12px;
 }
 
+/* Thẻ việc dở: hình video gốc, đã làm tới đâu và vài câu đầu, để nhớ đó là video nào. */
+.path.draft {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+  justify-content: stretch;
+  gap: 14px;
+}
+
+.path.draft strong {
+  overflow-wrap: anywhere;
+}
+
+.draft-media {
+  display: block;
+  width: 100%;
+  height: 200px;
+  border-radius: 14px;
+  background: var(--inset);
+  object-fit: contain;
+}
+
+audio.draft-media {
+  height: 44px;
+}
+
+.path.draft p {
+  word-break: normal;
+  overflow-wrap: anywhere;
+}
+
+.path.draft .draft-status {
+  margin-top: 8px;
+  color: var(--text);
+}
+
+.path.draft .draft-meta {
+  font-size: 0.86rem;
+}
+
+.path.draft .draft-link {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.draft-quote {
+  margin: 12px 0 0;
+  padding-left: 12px;
+  border-left: 2px solid var(--line-strong);
+}
+
+.draft-quote span {
+  display: block;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.path.draft .draft-quote p {
+  display: -webkit-box;
+  margin-top: 2px;
+  color: var(--text);
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.path.draft .draft-note {
+  margin-top: 12px;
+  font-size: 0.86rem;
+}
+
 .tune.path.path-link {
   display: grid;
   grid-template-columns: 1fr 1fr;

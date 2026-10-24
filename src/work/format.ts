@@ -1,4 +1,4 @@
-import type { FinishedDub, KeptVersion, LinePick, NameFix, ScriptLine, StepView } from "./types";
+import type { DraftBrief, FinishedDub, KeptVersion, LinePick, NameFix, ScriptLine, StepView } from "./types";
 
 // weight: rough share of a whole run, used to blend the steps into one overall estimate.
 const STEPS = [
@@ -217,6 +217,18 @@ export function when(ms: number) {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+// Việc dở đã làm tới đâu, từ số câu đã chép, đã dịch và đã đọc.
+export function draftProgress(brief: DraftBrief) {
+  const { heard, translated, spoken } = brief;
+  if (heard === 0) return "Chưa chép lời.";
+  if (translated === 0) return `Đã chép ${heard} câu, chưa dịch.`;
+  if (translated < heard) return `Đã chép ${heard} câu, dịch được ${translated}.`;
+  if (brief.textOnly) return `Đã dịch ${heard} câu, chưa ghi chữ vào video.`;
+  if (spoken === 0) return `Đã dịch ${heard} câu, chưa đọc giọng.`;
+  if (spoken < heard) return `Đã dịch ${heard} câu, mới đọc ${spoken}/${heard} câu.`;
+  return `Đã dịch và đọc ${heard} câu, chưa ghép video.`;
 }
 
 export function parentFolder(path: string) {
