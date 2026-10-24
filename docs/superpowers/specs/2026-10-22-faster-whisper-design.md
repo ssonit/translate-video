@@ -40,13 +40,15 @@ Hai dấu cách sau `]`. Giờ `HH:MM:SS.mmm`. Bỏ câu chữ rỗng. `end` nh�
 
 Tiến độ trên stderr, có xuống dòng: `progress = 13%`. Phần trăm là số nguyên, làm tròn, kẹp 0..100, tính `end / duration`. Hết việc thì `progress = 100%`.
 
+stdout và stderr luôn là UTF-8, vì Rust đọc UTF-8. Python trên Windows ghi pipe theo bảng mã ANSI (cp1252), nên chữ Trung hay `đ`, `ư` làm `print` báo `UnicodeEncodeError` và chữ có dấu trong thông báo thành `\uXXXX`. Script tự đổi sang UTF-8 ngay đầu `main`, không trông vào biến môi trường của người gọi.
+
 Xong, ghi `transcript.json` là mảng `[{"start": <giây>, "end": <giây>, "text": "..."}]`, UTF-8, không escape chữ Unicode. `read_cues` đã đọc dạng này.
 
 Không nghe được câu nào: không tạo `transcript.json` (file rỗng sẽ chặn lần chép sau), in stderr đúng câu `Không nghe được lời thoại.` rồi thoát mã khác 0.
 
 Thiếu `model.bin`: không gọi `WhisperModel`, in stderr `Chưa thấy model large-v3-turbo trong folder whisper.`
 
-Lỗi GPU hoặc thư viện: in stderr `faster-whisper không chạy được trên GPU.`
+Lỗi GPU hoặc thư viện: in stderr `faster-whisper không chạy được trên GPU.` rồi lý do thật trên cùng dòng, dạng `RuntimeError: <thông báo>`, để lỗi không phải của GPU không bị báo nhầm là lỗi GPU.
 
 ## Màn chuẩn bị
 

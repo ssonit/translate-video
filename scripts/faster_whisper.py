@@ -145,12 +145,22 @@ def run(model_dir, audio, out, duration):
         if duration is not None and duration > 0:
             print(format_progress(1), file=sys.stderr, end="", flush=True)
         return 0
-    except Exception:
-        print("faster-whisper không chạy được trên GPU.", file=sys.stderr)
+    except Exception as error:
+        reason = f"{type(error).__name__}: {error}"
+        print(f"faster-whisper không chạy được trên GPU. {reason}", file=sys.stderr)
         return 1
 
 
+# Rust đọc stdout và stderr theo UTF-8. Python trên Windows ghi pipe theo bảng mã ANSI (cp1252):
+# chữ Trung, đ, ư làm print() báo UnicodeEncodeError, chữ có dấu trong thông báo thành \uXXXX.
+def use_utf8_streams():
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+
+
 def main(argv):
+    use_utf8_streams()
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", required=True)
     parser.add_argument("--audio", required=True)
