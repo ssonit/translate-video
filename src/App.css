@@ -1,13 +1,13 @@
 :root {
   /* Bảng màu: nền than ấm, ba lớp bề mặt, một màu nhấn hổ phách */
-  --bg: #14120f;
-  --surface: #1e1b17;
-  --raised: #29251f;
-  --inset: #100e0c;
+  --bg: #151412;
+  --surface: #1e1d1a;
+  --raised: #2a2823;
+  --inset: #171613;
   --line: rgba(241, 233, 220, 0.1);
   --line-strong: rgba(241, 233, 220, 0.22);
-  --text: #f1e9dc;
-  --muted: #a79b8b;
+  --text: #f3ede3;
+  --muted: #b3a99a;
   --accent: #e7a15a;
   --accent-hover: #f0b274;
   --on-accent: #1a1208;
@@ -21,7 +21,9 @@
 
   color: var(--text);
   background: var(--bg);
-  font-family: "Outfit", "Segoe UI", sans-serif;
+  font-family: "Be Vietnam Pro", sans-serif;
+  font-size: 14px;
+  line-height: 1.55;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -74,6 +76,9 @@ body {
 }
 
 button,
+input,
+select,
+textarea,
 code {
   font: inherit;
 }
@@ -416,7 +421,7 @@ select:disabled {
 
 .path .link-input::placeholder,
 .key-row input::placeholder {
-  color: #7d7265;
+  color: var(--muted);
 }
 
 .path .link-input:focus,
@@ -1093,8 +1098,8 @@ select:disabled {
   height: 100dvh;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
-  gap: 12px;
-  padding: 16px 20px;
+  gap: 20px;
+  padding: 22px 26px;
   overflow: hidden;
 }
 
@@ -1110,8 +1115,8 @@ select:disabled {
 
 .stage-body {
   display: grid;
-  grid-template-columns: minmax(220px, 300px) minmax(0, 1fr);
-  gap: 12px;
+  grid-template-columns: minmax(210px, 250px) minmax(0, 1fr);
+  gap: 20px;
   min-height: 0;
 }
 
@@ -1294,7 +1299,7 @@ select:disabled {
 }
 
 .library-find input::placeholder {
-  color: #7d7265;
+  color: var(--muted);
 }
 
 .library-find input:focus {
@@ -2509,4 +2514,373 @@ audio.draft-media {
   width: 18px;
   height: 18px;
   fill: currentColor;
+}
+
+/* Nhịp chữ và thao tác chung, dùng cả màn Đồ nghề và các màn công việc. */
+button, summary, input, select, textarea {
+  -webkit-tap-highlight-color: transparent;
+}
+
+:where(button, summary, input, select, textarea, a):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+button:not(:disabled):active {
+  filter: brightness(0.93);
+}
+
+.check, .link, .pick {
+  min-height: 40px;
+  font-weight: 500;
+}
+
+.check {
+  font-weight: 600;
+}
+
+.stage .kicker {
+  font-size: 0.7rem;
+  letter-spacing: 0.14em;
+  margin-bottom: 4px;
+}
+
+.stage h1 {
+  font-size: 2rem;
+}
+
+.library {
+  background: #1a1916;
+  padding: 12px 8px;
+}
+
+.library-find {
+  padding: 0 4px 12px;
+  margin-bottom: 10px;
+}
+
+.library-find input {
+  min-height: 40px;
+  border-radius: 12px;
+}
+
+.lib-item.is-on {
+  background: var(--raised);
+  color: var(--text);
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+}
+
+.lib-item.is-on .row strong {
+  color: var(--accent);
+}
+
+.lib-item.is-on .row em,
+.lib-item.is-on .row-x {
+  color: var(--muted);
+  opacity: 1;
+}
+
+.lib-item.is-on .mini i {
+  background: var(--accent);
+}
+
+.lib-item.is-on .row-back {
+  border-color: var(--line-strong);
+  color: var(--accent);
+}
+
+.library .row {
+  padding: 14px 12px;
+}
+
+.library .row strong {
+  font-size: 0.95rem;
+  font-weight: 600;
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.library .row em {
+  margin-top: 4px;
+  line-height: 1.55;
+}
+
+.library-empty {
+  margin-top: 24px;
+  line-height: 1.7;
+}
+
+.compose-pane .composer {
+  padding: 20px 26px;
+}
+
+.section-label {
+  margin: 0;
+  color: var(--text);
+  font-size: 0.95rem;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.source-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.compose-pane .picks {
+  background: var(--inset);
+}
+
+.compose-pane .pick.is-on {
+  background: var(--raised);
+  color: var(--text);
+  box-shadow: 0 1px 4px #0003;
+}
+
+.compose-pane .source-card {
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--inset);
+}
+
+.source-card strong {
+  font-size: 0.88rem;
+  font-weight: 500;
+}
+
+.source-link-label {
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+
+.compose-pane .path p {
+  font-size: 0.83rem;
+  line-height: 1.7;
+  word-break: normal;
+  overflow-wrap: anywhere;
+}
+
+.compose-pane .path .link-input,
+.compose-pane .path .pill-select {
+  min-height: 44px;
+  border-color: var(--line-strong);
+  border-radius: 12px;
+  font-size: 0.92rem;
+  color: var(--text);
+}
+
+.compose-pane .path .link-input:focus,
+.compose-pane .path .pill-select:focus {
+  border-color: var(--accent);
+}
+
+.compose-section {
+  margin-top: 18px;
+}
+
+.compose-pane .tune.path.path-link {
+  gap: 16px;
+  margin-top: 12px;
+}
+
+.compose-pane .tune label {
+  font-size: 0.85rem;
+}
+
+.compose-pane .voice-pick button {
+  padding: 0 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  background: var(--raised);
+  color: var(--text);
+  font-weight: 500;
+  font-size: 0.85rem;
+}
+
+.compose-pane .voice-pick button:hover:not(:disabled) {
+  background: var(--idle-bg);
+  border-color: var(--accent);
+}
+
+.compose-pane .voice-empty {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 12px;
+}
+
+.translation-section {
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+
+.translation-section > .run-options .redo {
+  padding: 0;
+  min-height: 32px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  font-size: 0.88rem;
+}
+
+.translation-section > .run-options {
+  margin: 0;
+}
+
+.translation-config {
+  margin-top: 10px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+}
+
+.translation-config summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 16px;
+  border-radius: 14px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.translation-config summary::-webkit-details-marker {
+  display: none;
+}
+
+.translation-config summary:hover {
+  background: var(--idle-bg);
+}
+
+.translation-config summary strong,
+.translation-config summary small {
+  display: block;
+}
+
+.translation-config summary strong {
+  font-size: 0.88rem;
+  font-weight: 500;
+}
+
+.translation-config summary small {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.config-chevron {
+  font-size: 1.3rem;
+  color: var(--muted);
+}
+
+.translation-config[open] .config-chevron {
+  transform: rotate(180deg);
+}
+
+.compose-pane .config-fields.tune.path.path-link {
+  padding: 16px;
+  margin: 0;
+  border-top: 1px solid var(--line);
+}
+
+.output-section .run-options {
+  margin-top: 12px;
+}
+
+.output-section .redo {
+  padding: 9px 12px;
+  border-radius: 10px;
+  background: transparent;
+  font-size: 0.84rem;
+}
+
+.compose-foot {
+  flex-wrap: wrap;
+  padding: 16px 24px;
+  background: var(--inset);
+}
+
+.preview-hint {
+  margin: 14px 0 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.compose-foot .check,
+.compose-foot .preview-action {
+  min-width: 100px;
+}
+
+.compose-foot .preview-action:disabled {
+  opacity: 0.5;
+}
+
+.compose-foot .foot-note {
+  flex: 1 1 240px;
+}
+
+@media (max-width: 1000px) and (min-width: 701px) {
+  .stage-body {
+    grid-template-columns: 210px minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+    gap: 14px;
+  }
+
+  .compose-pane .composer {
+    padding: 20px;
+  }
+}
+
+@media (min-width: 701px) {
+  .compose-pane .tune.path.path-link {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr);
+  }
+}
+
+@media (max-width: 700px) {
+  .stage {
+    padding: 12px;
+    gap: 12px;
+  }
+
+  .stage-body {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(100px, 22vh) minmax(0, 1fr);
+    gap: 12px;
+  }
+
+  .stage .mast-row {
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+
+  .compose-pane .composer {
+    padding: 18px;
+  }
+
+  .compose-foot {
+    padding: 12px 16px;
+  }
+
+  .compose-pane .source-card {
+    padding: 14px;
+    flex-wrap: wrap;
+  }
+
+  .foot-actions {
+    flex-wrap: wrap;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :where(button, input, select, textarea, .setup-chip) {
+    transition: none;
+  }
 }
