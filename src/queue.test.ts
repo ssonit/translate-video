@@ -38,6 +38,41 @@ test("the same file is not queued twice, and the running file is left out", () =
   );
 });
 
+// Cùng một video Douyin copy hai lần: mã đầu đoạn đổi mỗi lần, link thì giữ nguyên.
+const DOUYIN_SHARE_A =
+  "2.56 07/31 GiC:/ :7pm z@G.IV 【漂泊监狱】第二集 # 鸣潮  https://v.douyin.com/9F1g72OKQWY/ 复制此链接，打开Dou音搜索，直接观看视频！";
+const DOUYIN_SHARE_B =
+  "8.74 06/12 mNo:/ :4pm k@P.XQ 【漂泊监狱】第二集 # 鸣潮  https://v.douyin.com/9F1g72OKQWY/ 复制此链接，打开Dou音搜索，直接观看视频！";
+const DOUYIN_OTHER =
+  "3.10 08/01 aBc:/ :1pm x@Y.ZZ 【漂泊监狱】第三集  https://v.douyin.com/Ab3dEfGh1jK/ 复制此链接，打开Dou音搜索，直接观看视频！";
+
+test("a share text is named by the link inside it, not by the text", () => {
+  assert.equal(queueLabel("link", DOUYIN_SHARE_A), "v.douyin.com · 9F1g72OKQWY");
+  assert.equal(
+    queueLabel("link", "Xem video này https://vt.tiktok.com/ZS123abc/ trên TikTok"),
+    "vt.tiktok.com · ZS123abc",
+  );
+});
+
+test("the same video shared twice is queued once, and another video still gets in", () => {
+  const result = appendJobs(
+    [],
+    [job(DOUYIN_SHARE_A, "link"), job(DOUYIN_SHARE_B, "link"), job(DOUYIN_OTHER, "link")],
+  );
+  assert.deepEqual(
+    result.added.map((item) => item.source),
+    [DOUYIN_SHARE_A, DOUYIN_OTHER],
+  );
+  assert.equal(result.skipped, 1);
+});
+
+test("the video that is running is not queued again as a share text", () => {
+  const running = queueKey("link", "https://v.douyin.com/9F1g72OKQWY/");
+  const result = appendJobs([], [job(DOUYIN_SHARE_B, "link")], running);
+  assert.equal(result.added.length, 0);
+  assert.equal(result.skipped, 1);
+});
+
 test("a saved queue without textOnly still loads as off", () => {
   const row = job("D:\\a.mp4");
   delete (row as { textOnly?: boolean }).textOnly;

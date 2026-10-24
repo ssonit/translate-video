@@ -2,6 +2,7 @@ import { DeepseekServerRow, useDeepseekServer } from "../DeepseekServer";
 import LocalModels from "../LocalModels";
 import { LockedNote } from "../SetupChip";
 import { LOCAL_MODELS } from "../guides";
+import { shareLink } from "../shareLink";
 import { fileName, languageName, LANGUAGES } from "./format";
 import { MODEL_HINTS, OTHER_MODEL } from "./models";
 import { RunOptions } from "./options";
@@ -164,6 +165,13 @@ export function Composer({
               autoComplete="off"
               spellCheck={false}
               onChange={(event) => onLink(event.target.value)}
+              onPaste={(event) => {
+                // Dán cả đoạn chia sẻ Douyin hoặc TikTok thì ô chỉ giữ link trong đó.
+                const link = shareLink(event.clipboardData.getData("text"));
+                if (link === null) return;
+                event.preventDefault();
+                onLink(link);
+              }}
             />
             <p>
               {audioOnly

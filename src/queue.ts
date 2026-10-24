@@ -1,6 +1,8 @@
 // Hàng đợi chỉ xếp việc. Một video chạy xong mới tới video sau.
 // Danh sách chờ ghi vào máy, thoát app rồi mở lại vẫn còn.
 
+import { shareLink } from "./shareLink.ts";
+
 const QUEUE_STORAGE_KEY = "dub-queue";
 
 export type QueueJob = {
@@ -17,23 +19,30 @@ export type QueueJob = {
   textOnly: boolean;
 };
 
+// Đoạn chia sẻ Douyin hoặc TikTok thì lấy link trong đó. Chữ khác giữ nguyên.
+function linkIn(source: string) {
+  const value = source.trim();
+  return shareLink(value) ?? value;
+}
+
 export function queueKey(mode: "file" | "link", source: string) {
   const value = source.trim();
-  if (mode === "link") return `link:${value}`;
+  if (mode === "link") return `link:${linkIn(value)}`;
   return `file:${value.replace(/\//g, "\\").replace(/\\+$/, "").toLowerCase()}`;
 }
 
 export function queueLabel(mode: "file" | "link", source: string) {
   const value = source.trim();
   if (mode === "link") {
+    const link = linkIn(value);
     try {
-      const url = new URL(value);
+      const url = new URL(link);
       const host = url.hostname.replace(/^www\./, "");
       const fromQuery = url.searchParams.get("v") || url.searchParams.get("modal_id");
       const id = fromQuery || url.pathname.split("/").filter(Boolean).pop();
       return id ? `${host} · ${id}` : host;
     } catch {
-      return value.length > 48 ? `${value.slice(0, 48)}…` : value;
+      return link.length > 48 ? `${link.slice(0, 48)}…` : link;
     }
   }
   const parts = value.split(/[/\\]/);

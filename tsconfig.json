@@ -21,6 +21,6 @@
     "noFallthroughCasesInSwitch": true
   },
   "include": ["src"],
-  "exclude": ["src/watchPlay.test.ts", "src/namePaste.test.ts", "src/queue.test.ts", "src/work/format.test.ts", "src/tts/piper.test.ts", "src/tts/wav.test.ts", "src/tts/prepare.test.ts", "src/listenStop.test.ts", "src/setupStatus.test.ts"],
+  "exclude": ["src/watchPlay.test.ts", "src/namePaste.test.ts", "src/queue.test.ts", "src/shareLink.test.ts", "src/work/format.test.ts", "src/tts/piper.test.ts", "src/tts/wav.test.ts", "src/tts/prepare.test.ts", "src/listenStop.test.ts", "src/setupStatus.test.ts"],
   "references": [{ "path": "./tsconfig.node.json" }]
 }
