@@ -134,13 +134,13 @@ export default function ListenPart({
     setTranslating(true);
     void (async () => {
       try {
-        const outline = await invoke<Outline>("listen_part", { root, part: index });
+        const outline = await invoke<Outline>("listen_part", { root, part: index, target: lang });
         if (gen.current !== token) return;
         setCount(outline.count);
         setWords(outline.words);
         setSource(outline.source);
         if (outline.text || skipTranslate) {
-          setText(outline.text || outline.source);
+          setText(skipTranslate ? outline.source : outline.text);
           setTranslating(false);
           return;
         }

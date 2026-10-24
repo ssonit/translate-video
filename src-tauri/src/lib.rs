@@ -911,7 +911,9 @@ fn piper_check() -> ToolCheck {
     }
 }
 
-const CHECK_IDS: [&str; 7] = ["ffmpeg", "ollama", "model", "voice", "piper", "whisper", "ytdlp"];
+const CHECK_IDS: [&str; 7] = [
+    "ffmpeg", "ollama", "model", "voice", "piper", "whisper", "ytdlp",
+];
 
 // Mỗi mục có thể mở một chương trình ngoài (ffmpeg, python, yt-dlp, piper). Chạy cùng lúc thì
 // tổng thời gian chỉ bằng mục chậm nhất, không cộng dồn. Thứ tự kết quả theo CHECK_IDS.
@@ -1340,17 +1342,44 @@ fn delete_kept_version(output_dir: String, path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn finished_result(
+async fn finished_result(
+    app: tauri::AppHandle,
     video: String,
     output_dir: String,
     text_only: Option<bool>,
+    target: Option<String>,
+    voice: Option<String>,
+    audio_only: Option<bool>,
+    burn: Option<bool>,
+    skip_translate: Option<bool>,
 ) -> Result<String, String> {
-    Ok(job::finished_result(
-        Path::new(&video),
-        Path::new(&output_dir),
-        text_only.unwrap_or(false),
-    )
-    .unwrap_or_default())
+    tauri::async_runtime::spawn_blocking(move || {
+        let target = pipeline::clean_target(target.as_deref().unwrap_or("vi")).0;
+        let prefs = read_prefs(&prefs_path(&app)?);
+        let settings = pipeline::RunSettings {
+            target: target.into(),
+            voice: voice
+                .filter(|name| !name.is_empty())
+                .unwrap_or_else(|| selected_voice(&app, target).unwrap_or_default()),
+            use_terms: prefs.use_terms,
+            skip_translate: skip_translate.unwrap_or(prefs.skip_translate),
+            text_only: text_only.unwrap_or(false),
+        };
+        let result = pipeline::matching_result(
+            Path::new(&video),
+            Path::new(&output_dir),
+            &settings,
+            audio_only.unwrap_or(false),
+            burn.unwrap_or(prefs.burn_captions),
+        );
+        Ok(result
+            .filter(|path| {
+                pipeline::media_duration(Path::new(path), &AtomicBool::new(false)).is_ok()
+            })
+            .unwrap_or_default())
+    })
+    .await
+    .unwrap_or_else(|_| Err("Không kiểm tra được video đã lưu.".into()))
 }
 
 #[tauri::command]
@@ -1551,8 +1580,10 @@ struct ListenPartPayload {
     text: String,
 }
 
-fn preview_dir(root: &Path) -> PathBuf {
+fn preview_dir(root: &Path, target: &str) -> PathBuf {
+    // Cache cũ không ghi ngôn ngữ nên không thể dùng lại một cách chắc chắn.
     root.join("preview-parts")
+        .join(pipeline::clean_target(target).0)
 }
 
 fn listen_root(root: &str) -> Result<PathBuf, String> {
@@ -1563,7 +1594,7 @@ fn listen_root(root: &str) -> Result<PathBuf, String> {
     Ok(root)
 }
 
-fn listen_outline(root: &Path, part: usize) -> Result<ListenPartPayload, String> {
+fn listen_outline(root: &Path, part: usize, target: &str) -> Result<ListenPartPayload, String> {
     let cues: Vec<job::Cue> = job::read_json(&root.join("transcript.json")).unwrap_or_default();
     let parts = listen::pack_listen_parts(&cues);
     if parts.is_empty() {
@@ -1577,7 +1608,7 @@ fn listen_outline(root: &Path, part: usize) -> Result<ListenPartPayload, String>
     }
     let index = part.clamp(1, parts.len());
     let source = parts[index - 1].clone();
-    let text = listen::cached_part(&preview_dir(root), index, &source).unwrap_or_default();
+    let text = listen::cached_part(&preview_dir(root, target), index, &source).unwrap_or_default();
     Ok(ListenPartPayload {
         index,
         count: parts.len(),
@@ -1589,8 +1620,16 @@ fn listen_outline(root: &Path, part: usize) -> Result<ListenPartPayload, String>
 
 // Phụ đề đã có: trả một phần khoảng 1.000 từ để dịch và nghe, không tải video.
 #[tauri::command]
-fn listen_part(root: String, part: Option<usize>) -> Result<ListenPartPayload, String> {
-    listen_outline(&listen_root(&root)?, part.unwrap_or(1))
+fn listen_part(
+    root: String,
+    part: Option<usize>,
+    target: Option<String>,
+) -> Result<ListenPartPayload, String> {
+    listen_outline(
+        &listen_root(&root)?,
+        part.unwrap_or(1),
+        target.as_deref().unwrap_or("vi"),
+    )
 }
 
 // Dịch đúng phần đang chọn. Bản đã dịch thì trả lại, không gọi lại.
@@ -1603,7 +1642,7 @@ async fn translate_listen_part(
 ) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let root = listen_root(&root)?;
-        let outline = listen_outline(&root, part)?;
+        let outline = listen_outline(&root, part, &target)?;
         if outline.count == 0 {
             return Err("Chưa có phụ đề để dịch.".into());
         }
@@ -1617,14 +1656,19 @@ async fn translate_listen_part(
         ollama::require_deepseek_local(&choice, false)?;
         let (_, target_name) = pipeline::clean_target(&target);
         let prev = if outline.index > 1 {
-            listen_outline(&root, outline.index - 1)?.text
+            listen_outline(&root, outline.index - 1, &target)?.text
         } else {
             String::new()
         };
         let prompt = ollama::prose_prompt(&outline.source, target_name, &prev);
         let cancel = AtomicBool::new(false);
         let text = ollama::complete_plain(&choice, &prompt, &cancel)?;
-        listen::store_part(&preview_dir(&root), outline.index, &outline.source, &text)?;
+        listen::store_part(
+            &preview_dir(&root, &target),
+            outline.index,
+            &outline.source,
+            &text,
+        )?;
         Ok(text)
     })
     .await
@@ -2113,6 +2157,29 @@ mod tests {
     use super::*;
     use std::fs;
 
+    #[test]
+    fn listen_cache_never_reuses_another_language_or_an_unlabelled_legacy_part() {
+        let root = scratch("listen-language");
+        job::write_json(
+            &root.join("transcript.json"),
+            &vec![job::Cue {
+                start: 0.0,
+                end: 1.0,
+                text: "Hello.".into(),
+            }],
+        )
+        .unwrap();
+        listen::store_part(&root.join("preview-parts"), 1, "Hello.", "legacy").unwrap();
+        assert!(listen_outline(&root, 1, "vi").unwrap().text.is_empty());
+        listen::store_part(&preview_dir(&root, "vi"), 1, "Hello.", "Xin chào.").unwrap();
+        assert_eq!(listen_outline(&root, 1, "vi").unwrap().text, "Xin chào.");
+        assert!(listen_outline(&root, 1, "en").unwrap().text.is_empty());
+        listen::store_part(&preview_dir(&root, "en"), 1, "Hello.", "Hello!").unwrap();
+        assert_eq!(listen_outline(&root, 1, "en").unwrap().text, "Hello!");
+        assert_eq!(listen_outline(&root, 1, "vi").unwrap().text, "Xin chào.");
+        fs::remove_dir_all(root).unwrap();
+    }
+
     fn scratch(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("voice-pair-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
@@ -2418,7 +2485,10 @@ mod tests {
         eprintln!("lần lượt {sequential:?}, song song {:?}", started.elapsed());
         let ids: Vec<&str> = together.iter().map(|check| check.id.as_str()).collect();
         assert_eq!(ids, CHECK_IDS);
-        let same: Vec<(&str, bool)> = one_by_one.iter().map(|c| (c.id.as_str(), c.ready)).collect();
+        let same: Vec<(&str, bool)> = one_by_one
+            .iter()
+            .map(|c| (c.id.as_str(), c.ready))
+            .collect();
         let now: Vec<(&str, bool)> = together.iter().map(|c| (c.id.as_str(), c.ready)).collect();
         assert_eq!(same, now, "song song phải cho cùng kết quả với lần lượt");
     }

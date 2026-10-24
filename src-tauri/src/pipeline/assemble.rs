@@ -354,6 +354,12 @@ fn listen_beside(result: &Path) -> PathBuf {
     plain.with_file_name(format!("{stem}.nghe.m4a"))
 }
 
+pub(super) fn drop_listen_export(job: &Job) {
+    let audio = listen_beside(&job.result());
+    let _ = std::fs::remove_file(audio.with_extension("srt"));
+    let _ = std::fs::remove_file(audio);
+}
+
 fn listen_dir(job: &Job) -> PathBuf {
     job.root.join("listen")
 }
@@ -587,7 +593,7 @@ pub(crate) fn save_video(result: &Path, dest: &Path) -> Result<(), String> {
         named.push(".mp4");
         dest.with_file_name(named)
     };
-    copy_file(result, &dest, &partial_path(&dest), "video")
+    copy_file(result, &dest, "video")
 }
 
 fn is_mp4(path: &Path) -> bool {
@@ -668,11 +674,11 @@ fn audio_partial(out: &Path) -> PathBuf {
 }
 
 fn copy_audio(from: &Path, dest: &Path) -> Result<(), String> {
-    copy_file(from, dest, &audio_partial(dest), "audio")
+    copy_file(from, dest, "audio")
 }
 
 // Chép qua file dở cạnh đích rồi đổi tên, để đích không bao giờ là file ghi dở. Lỗi nào cũng dọn file dở.
-fn copy_file(from: &Path, dest: &Path, partial: &Path, what: &str) -> Result<(), String> {
+fn copy_file(from: &Path, dest: &Path, what: &str) -> Result<(), String> {
     if same_path(from, dest) {
         return Ok(());
     }
@@ -681,17 +687,77 @@ fn copy_file(from: &Path, dest: &Path, partial: &Path, what: &str) -> Result<(),
             std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
         }
     }
-    let _ = std::fs::remove_file(partial);
-    if let Err(error) = std::fs::copy(from, partial) {
-        let _ = std::fs::remove_file(partial);
+    // Chỉ dọn file tạm do chính lần lưu này tạo; không chiếm tên .partial của người dùng.
+    let mut input = std::fs::File::open(from).map_err(|error| error.to_string())?;
+    let (partial, mut output) = copy_temp(dest)?;
+    let copied = std::io::copy(&mut input, &mut output).and_then(|_| output.sync_all());
+    drop(output);
+    if let Err(error) = copied {
+        let _ = std::fs::remove_file(&partial);
         return Err(format!("Không ghi được {what}. {error}"));
     }
-    let _ = std::fs::remove_file(dest);
-    if let Err(error) = std::fs::rename(partial, dest) {
-        let _ = std::fs::remove_file(partial);
+    if let Err(error) = std::fs::rename(&partial, dest) {
+        let _ = std::fs::remove_file(&partial);
         return Err(format!("Không ghi được {what}. {error}"));
     }
     Ok(())
+}
+
+fn write_video_output(
+    mut command: Command,
+    out: &Path,
+    total: Option<f64>,
+    cancel: &AtomicBool,
+    progress: &mut dyn FnMut(f64),
+) -> Result<(), String> {
+    let partial = partial_path(out);
+    let _ = std::fs::remove_file(&partial);
+    command.arg(&partial);
+    let merged = run_ffmpeg_progress(
+        command,
+        total,
+        Duration::from_secs(60 * 60),
+        cancel,
+        progress,
+    );
+    if let Err(error) = merged {
+        let _ = std::fs::remove_file(&partial);
+        return Err(error);
+    }
+    if !file_ready(&partial) {
+        let _ = std::fs::remove_file(&partial);
+        return Err("FFmpeg không ghi được video kết quả.".into());
+    }
+    if let Err(error) = std::fs::rename(&partial, out) {
+        let _ = std::fs::remove_file(&partial);
+        return Err(error.to_string());
+    }
+    Ok(())
+}
+
+fn copy_temp(dest: &Path) -> Result<(PathBuf, std::fs::File), String> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let name = dest
+        .file_name()
+        .ok_or("Chưa chọn chỗ lưu.")?
+        .to_string_lossy();
+    loop {
+        let path = dest.with_file_name(format!(
+            ".{name}.save-{}-{}.tmp",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(file) => return Ok((path, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.to_string()),
+        }
+    }
 }
 
 fn same_path(left: &Path, right: &Path) -> bool {
@@ -790,20 +856,10 @@ pub(super) fn merge(
                 "0",
                 "-use_editlist",
                 "0",
-            ])
-            .arg(job.result());
-        run_ffmpeg_progress(
-            command,
-            total,
-            Duration::from_secs(60 * 60),
-            cancel,
-            &mut |fraction| {
-                report_progress(app, "merge", "Đang ghép video.", fraction, 1.0);
-            },
-        )?;
-        if !file_ready(&job.result()) {
-            return Err("FFmpeg không ghi được video kết quả.".into());
-        }
+            ]);
+        write_video_output(command, &job.result(), total, cancel, &mut |fraction| {
+            report_progress(app, "merge", "Đang ghép video.", fraction, 1.0);
+        })?;
     }
     release_mix(&job.root);
     if burn && !file_ready(&job.captioned()) {
@@ -1309,8 +1365,14 @@ mod tests {
         for typed in ["ban-dich", "tap 1.vi", "Giu.MP4"] {
             save_video(&src, &out.join(typed)).unwrap();
         }
-        assert_eq!(file_names(&out), ["Giu.MP4", "ban-dich.mp4", "tap 1.vi.mp4"]);
-        assert_eq!(std::fs::read(out.join("tap 1.vi.mp4")).unwrap(), b"video-bytes");
+        assert_eq!(
+            file_names(&out),
+            ["Giu.MP4", "ban-dich.mp4", "tap 1.vi.mp4"]
+        );
+        assert_eq!(
+            std::fs::read(out.join("tap 1.vi.mp4")).unwrap(),
+            b"video-bytes"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1347,6 +1409,128 @@ mod tests {
         assert_eq!(std::fs::read(out.join("ban-dich.mp4")).unwrap(), b"moi");
         assert_eq!(file_names(&out), ["ban-dich.mp4"]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn saving_never_deletes_an_existing_partial_or_the_source() {
+        let dir = save_video_dir("unrelated-partial");
+        let source = dir.join("source.vi.mp4");
+        let dest = dir.join("export.mp4");
+        let other = dir.join("export.partial.mp4");
+        std::fs::write(&source, b"video").unwrap();
+        std::fs::write(&other, b"keep me").unwrap();
+        save_video(&source, &dest).unwrap();
+        assert_eq!(std::fs::read(&other).unwrap(), b"keep me");
+        // Kể cả khi file nguồn có đúng tên mà cách lưu cũ dùng làm file tạm.
+        save_video(&other, &dest).unwrap();
+        assert_eq!(std::fs::read(&other).unwrap(), b"keep me");
+        assert_eq!(std::fs::read(&dest).unwrap(), b"keep me");
+        assert_eq!(
+            file_names(&dir),
+            ["export.mp4", "export.partial.mp4", "source.vi.mp4"]
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn failed_replace_keeps_the_previous_destination_and_cleans_only_its_own_temp() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = save_video_dir("locked-dest");
+        let source = dir.join("source.vi.mp4");
+        let dest = dir.join("export.mp4");
+        std::fs::write(&source, b"new").unwrap();
+        std::fs::write(&dest, b"old").unwrap();
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(1)
+            .open(&dest)
+            .unwrap();
+        assert!(save_video(&source, &dest).is_err());
+        assert_eq!(std::fs::read(&dest).unwrap(), b"old");
+        assert_eq!(file_names(&dir), ["export.mp4", "source.vi.mp4"]);
+        drop(lock);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn test_video_command(realtime: bool) -> Command {
+        let mut command = Command::new("ffmpeg");
+        command.args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-progress",
+            "pipe:1",
+            "-nostats",
+            "-y",
+        ]);
+        if realtime {
+            command.arg("-re");
+        }
+        command.args([
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=black:s=64x64:r=10",
+            "-t",
+            if realtime { "30" } else { "0.2" },
+            "-c:v",
+            "mpeg4",
+            "-an",
+        ]);
+        command
+    }
+
+    #[test]
+    fn interrupted_merge_never_publishes_a_finished_file() {
+        if crate::program_path("ffmpeg").is_none() {
+            return;
+        }
+        let dir = save_video_dir("cancel-merge");
+        let out = dir.join("clip.vi.mp4");
+        let cancel = AtomicBool::new(false);
+        let mut saw_partial = false;
+        let result = write_video_output(
+            test_video_command(true),
+            &out,
+            Some(30.0),
+            &cancel,
+            &mut |fraction| {
+                assert!(!out.exists());
+                saw_partial |= file_ready(&partial_path(&out));
+                if fraction > 0.0 {
+                    cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+            },
+        );
+        assert_eq!(result.unwrap_err(), "Đã dừng.");
+        assert!(saw_partial);
+        assert!(!out.exists());
+        assert!(!partial_path(&out).exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn successful_merge_publishes_a_readable_mp4_and_no_partial() {
+        if crate::program_path("ffmpeg").is_none() || crate::program_path("ffprobe").is_none() {
+            return;
+        }
+        let dir = save_video_dir("publish-merge");
+        let out = dir.join("clip.vi.mp4");
+        let cancel = AtomicBool::new(false);
+        write_video_output(
+            test_video_command(false),
+            &out,
+            Some(0.2),
+            &cancel,
+            &mut |_| {
+                assert!(!out.exists());
+            },
+        )
+        .unwrap();
+        assert!(media_duration(&out, &cancel).unwrap() > 0.0);
+        assert!(!partial_path(&out).exists());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

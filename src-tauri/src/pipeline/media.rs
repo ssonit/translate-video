@@ -45,6 +45,39 @@ pub(super) fn drop_fit_wavs(dir: &Path) {
     }
 }
 
+// Các bản cũ từng ghi thẳng vào tên kết quả. Giữ file hỏng ở thư mục riêng,
+// để lần chạy tiếp có thể ghép lại mà không mất các câu đã dịch/đọc.
+pub(crate) fn recover_incomplete_exports(job: &Job, cancel: &AtomicBool) -> Result<(), String> {
+    for path in [job.result(), job.captioned(), job.spoken()] {
+        if !file_ready(&path) {
+            continue;
+        }
+        super::require_tool("ffprobe")?;
+        stopped(cancel)?;
+        if media_duration(&path, cancel).is_ok() {
+            continue;
+        }
+        stopped(cancel)?;
+        let saved = job.root.join("incomplete");
+        std::fs::create_dir_all(&saved).map_err(|error| error.to_string())?;
+        let name = path
+            .file_name()
+            .ok_or("Không đọc được tên file kết quả.")?
+            .to_string_lossy();
+        let mut index = 1u64;
+        let dest = loop {
+            let dest = saved.join(format!("{index}-{name}"));
+            if !dest.exists() {
+                break dest;
+            }
+            index += 1;
+        };
+        std::fs::rename(&path, &dest)
+            .map_err(|error| format!("Không cất được file kết quả ghi dở: {error}"))?;
+    }
+    Ok(())
+}
+
 fn has_deliverable(dir: &Path) -> bool {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return false;
@@ -808,6 +841,37 @@ fn brief_error(text: &str) -> String {
 mod tests {
     use super::super::assemble::srt_has_cues;
     use super::*;
+
+    #[test]
+    fn legacy_incomplete_export_is_preserved_and_no_longer_blocks_resume() {
+        if crate::program_path("ffprobe").is_none() {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("incomplete-export-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("lines")).unwrap();
+        let job = Job {
+            video: root.join("clip.mp4"),
+            picture: root.join("clip.mp4"),
+            root: root.clone(),
+            target: "vi".into(),
+        };
+        std::fs::write(job.result(), b"incomplete mp4").unwrap();
+        std::fs::write(job.line_wav(1), b"spoken line").unwrap();
+        std::fs::write(job.transcript(), b"transcript").unwrap();
+        recover_incomplete_exports(&job, &AtomicBool::new(false)).unwrap();
+        assert!(!job.result().exists());
+        let saved = std::fs::read_dir(root.join("incomplete"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        assert_eq!(std::fs::read(saved).unwrap(), b"incomplete mp4");
+        assert_eq!(std::fs::read(job.line_wav(1)).unwrap(), b"spoken line");
+        assert_eq!(std::fs::read(job.transcript()).unwrap(), b"transcript");
+        assert!(crate::job::finished_result(&job.root, &root, false).is_none());
+        std::fs::remove_dir_all(root).unwrap();
+    }
     use serde_json::json;
     use std::sync::atomic::AtomicBool;
 

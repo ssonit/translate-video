@@ -214,10 +214,22 @@ export function jobActions(s: Session) {
     }
   }
 
-  async function existingResult(source: string, outputDir: string, textOnly: boolean) {
-    if (!source || !outputDir) return "";
+  async function existingResult(
+    source: string,
+    spec: Pick<JobSpec, "folder" | "textOnly" | "target" | "voice" | "audioOnly" | "burnCaptions" | "skipTranslate">,
+  ) {
+    if (!source || !spec.folder) return "";
     try {
-      return await invoke<string>("finished_result", { video: source, outputDir, textOnly });
+      return await invoke<string>("finished_result", {
+        video: source,
+        outputDir: spec.folder,
+        textOnly: spec.textOnly,
+        target: spec.target,
+        voice: spec.voice,
+        audioOnly: spec.audioOnly,
+        burn: spec.burnCaptions,
+        skipTranslate: spec.skipTranslate,
+      });
     } catch {
       return "";
     }
@@ -280,7 +292,7 @@ export function jobActions(s: Session) {
       }
       if (!source) return false;
       s.setVideo(source);
-      const existing = await existingResult(source, spec.folder, spec.textOnly);
+      const existing = await existingResult(source, spec);
       if (existing) {
         proceed = true;
         const more = s.queueRef.current.length > 0 && !s.holdQueue.current;
@@ -494,7 +506,15 @@ export function jobActions(s: Session) {
         s.ownsRun.current = false;
       }
       if (!source) return;
-      const existing = await existingResult(source, s.folder, s.textOnly);
+      const existing = await existingResult(source, {
+        folder: s.folder,
+        textOnly: s.textOnly,
+        target: s.target,
+        voice: s.voice,
+        audioOnly: s.audioOnly,
+        burnCaptions: s.burnCaptions,
+        skipTranslate: s.skipTranslate,
+      });
       if (existing) {
         openFinished(source, existing, s.textOnly);
         return;

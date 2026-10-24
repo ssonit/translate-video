@@ -1,7 +1,7 @@
 import type { Pcm16 } from "./piper";
 import type { FromWorker, ToWorker } from "./tts.worker";
 import type { VoiceConfig } from "./piper";
-import { enqueueSpeak, loadJoin, loadStillCurrent, slotAfterCrash } from "./streamGate";
+import { loadJoin, loadStillCurrent, slotAfterCrash } from "./streamGate";
 
 export type VoiceFiles = { model: ArrayBuffer; config: VoiceConfig };
 

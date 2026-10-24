@@ -44,18 +44,60 @@ pub(crate) struct StepEvent {
 }
 
 #[derive(Serialize, serde::Deserialize, PartialEq)]
-pub(super) struct RunSettings {
-    pub(super) target: String,
-    pub(super) voice: String,
+pub(crate) struct RunSettings {
+    pub(crate) target: String,
+    pub(crate) voice: String,
     // false: bỏ bước thuật ngữ. File job cũ không có trường này thì cũng là bỏ.
     #[serde(default)]
-    pub(super) use_terms: bool,
+    pub(crate) use_terms: bool,
     // true: giữ nguyên lời đã chép, không gọi model dịch. File job cũ không có trường này thì vẫn dịch.
     #[serde(default)]
-    pub(super) skip_translate: bool,
+    pub(crate) skip_translate: bool,
     // true: đốt chữ lên video gốc, không đọc giọng. File job cũ không có trường này thì vẫn lồng tiếng.
     #[serde(default)]
-    pub(super) text_only: bool,
+    pub(crate) text_only: bool,
+}
+
+// Chỉ mở bản cũ khi nó khớp lựa chọn của lần chạy này. Thiếu settings cũ thì chạy
+// pipeline để kiểm tra từng bước; thư viện vẫn mở được các bản cũ bình thường.
+pub(crate) fn matching_result(
+    video: &Path,
+    output: &Path,
+    now: &RunSettings,
+    audio_only: bool,
+    burn: bool,
+) -> Option<String> {
+    let found = PathBuf::from(crate::job::finished_result(video, output, now.text_only)?);
+    let root = found.parent()?;
+    let before: RunSettings = crate::job::read_json(&root.join("settings.json")).ok()?;
+    if before.target != now.target
+        || before.use_terms != now.use_terms
+        || before.skip_translate != now.skip_translate
+        || before.text_only != now.text_only
+        || (!now.text_only && before.voice != now.voice)
+    {
+        return None;
+    }
+    if !now.text_only {
+        let mode = std::fs::read_to_string(root.join("fit-mode.txt")).unwrap_or_default();
+        if (audio_only && mode.trim() != "story") || (!audio_only && mode.trim() == "story") {
+            return None;
+        }
+    }
+    let result = if audio_only {
+        assemble::plain_result(&found).with_extension("m4a")
+    } else if !now.text_only && burn {
+        crate::job::captioned_path(&assemble::plain_result(&found))
+    } else {
+        found
+    };
+    if !audio_only && result.extension().is_none_or(|ext| ext != "mp4") {
+        return None;
+    }
+    if crate::job::media_language(&result) != now.target || !crate::job::file_ready(&result) {
+        return None;
+    }
+    Some(result.to_string_lossy().into_owned())
 }
 
 // Target languages the translation can be asked for: (code, name used inside the prompts).
@@ -120,6 +162,11 @@ fn drop_stale(job: &Job, now: &RunSettings) {
             }
         }
         if voice_changed || text_changed {
+            assemble::drop_listen_export(job);
+            if voice_changed {
+                remove(job.result());
+                remove(job.captioned());
+            }
             remove(job.fit_report());
             remove(job.dub());
             remove(job.spoken());
@@ -225,6 +272,7 @@ pub(crate) fn run(
             )
         })?;
     }
+    media::recover_incomplete_exports(&job, cancel)?;
     drop_stale(
         &job,
         &RunSettings {
@@ -647,5 +695,87 @@ mod tests {
         assert_eq!(error, "Chỉ chọn một: chỉ audio hoặc chỉ hiện chữ.");
         assert!(reject_both_modes(false, true).is_ok());
         assert!(reject_both_modes(true, false).is_ok());
+    }
+
+    #[test]
+    fn cached_results_must_match_language_voice_modes_and_burn_choice() {
+        let job = scratch_job("matching");
+        let mut settings = RunSettings {
+            target: "vi".into(),
+            voice: "a".into(),
+            use_terms: false,
+            skip_translate: false,
+            text_only: false,
+        };
+        crate::job::write_json(&job.settings_path(), &settings).unwrap();
+        std::fs::write(job.result(), b"video").unwrap();
+        let cached = |settings: &RunSettings, audio, burn| {
+            matching_result(&job.root, &job.root, settings, audio, burn)
+        };
+        assert_eq!(
+            cached(&settings, false, false).unwrap(),
+            job.result().to_string_lossy()
+        );
+        assert!(cached(&settings, true, false).is_none());
+        assert!(cached(&settings, false, true).is_none());
+        std::fs::write(job.captioned(), b"captioned").unwrap();
+        assert_eq!(
+            cached(&settings, false, true).unwrap(),
+            job.captioned().to_string_lossy()
+        );
+        std::fs::write(job.spoken(), b"audio").unwrap();
+        assert!(cached(&settings, true, false).is_none());
+        std::fs::write(job.root.join("fit-mode.txt"), "story").unwrap();
+        assert_eq!(
+            cached(&settings, true, false).unwrap(),
+            job.spoken().to_string_lossy()
+        );
+        assert!(cached(&settings, false, false).is_none());
+        std::fs::write(job.root.join("fit-mode.txt"), "sync").unwrap();
+        settings.target = "en".into();
+        assert!(cached(&settings, false, false).is_none());
+        settings.target = "vi".into();
+        settings.voice = "b".into();
+        assert!(cached(&settings, false, false).is_none());
+        settings.voice = "a".into();
+        settings.skip_translate = true;
+        assert!(cached(&settings, false, false).is_none());
+        settings.skip_translate = false;
+        settings.use_terms = true;
+        assert!(cached(&settings, false, false).is_none());
+        settings.use_terms = false;
+        settings.text_only = true;
+        assert!(cached(&settings, false, false).is_none());
+        std::fs::remove_dir_all(job.root).unwrap();
+    }
+
+    #[test]
+    fn changing_voice_invalidates_exports_but_keeps_transcript_and_translation() {
+        let job = scratch_job("voice-change");
+        remember_settings(&job, "vi", "a", false, false, false);
+        for path in [
+            job.result(),
+            job.captioned(),
+            job.spoken(),
+            job.dub(),
+            job.line_wav(1),
+            job.transcript(),
+            job.translation_path(),
+        ] {
+            std::fs::write(path, b"data").unwrap();
+        }
+        remember_settings(&job, "vi", "b", false, false, false);
+        for path in [
+            job.result(),
+            job.captioned(),
+            job.spoken(),
+            job.dub(),
+            job.line_wav(1),
+        ] {
+            assert!(!path.exists());
+        }
+        assert!(job.transcript().exists());
+        assert!(job.translation_path().exists());
+        std::fs::remove_dir_all(job.root).unwrap();
     }
 }

@@ -67,6 +67,7 @@ impl Job {
         if root.as_path() == video {
             return Err("Folder kết quả trùng file video.".into());
         }
+        require_same_source(&root, video)?;
         std::fs::create_dir_all(root.join("lines")).map_err(|error| error.to_string())?;
         let previous = read_json::<VideoSource>(&root.join("source.json")).unwrap_or_default();
         let picture = if is_picture_ext(&ext) {
@@ -348,7 +349,35 @@ pub(crate) fn finished_result(video: &Path, output_dir: &Path, text_only: bool) 
     } else {
         return None;
     };
+    if !video.is_dir() {
+        require_same_source(&root, video).ok()?;
+    }
     result_for_mode(&root, text_only).map(|path| path.to_string_lossy().into_owned())
+}
+
+// Không thay source.json rồi tiếp tục dùng lời chép của một video khác cùng tên.
+fn require_same_source(root: &Path, video: &Path) -> Result<(), String> {
+    let path = root.join("source.json");
+    if !path.exists() {
+        return Ok(());
+    }
+    let saved: VideoSource = read_json(&path)?;
+    let normalize = |path: &Path| {
+        path.canonicalize()
+            .unwrap_or_else(|_| path.to_path_buf())
+            .to_string_lossy()
+            .trim_start_matches(r"\\?\")
+            .replace('/', "\\")
+            .to_lowercase()
+    };
+    let wanted = normalize(video);
+    if [&saved.video, &saved.picture]
+        .iter()
+        .any(|source| !source.is_empty() && normalize(Path::new(source)) == wanted)
+    {
+        return Ok(());
+    }
+    Err("Folder kết quả đã có video khác cùng tên. Chọn folder kết quả khác hoặc đổi tên video mới.".into())
 }
 
 fn next_kept_slot(kept: &Path) -> PathBuf {
@@ -1072,6 +1101,30 @@ mod tests {
             "tap 1 demo"
         );
         assert_eq!(folder_name(Path::new("...")), "video");
+    }
+
+    #[test]
+    fn same_name_from_another_folder_never_replaces_source_or_reuses_result() {
+        let dir = scratch("same-name");
+        for sub in ["a", "b", "out"] {
+            fs::create_dir_all(dir.join(sub)).unwrap();
+        }
+        let first = dir.join("a/clip.mp4");
+        let other = dir.join("b/clip.mp4");
+        fs::write(&first, b"a").unwrap();
+        fs::write(&other, b"b").unwrap();
+        let output = dir.join("out");
+        let job = Job::open(&first, &output).unwrap();
+        fs::write(job.transcript(), b"first transcript").unwrap();
+        fs::write(job.result(), b"first result").unwrap();
+        let source = fs::read(job.root.join("source.json")).unwrap();
+        assert!(Job::open(&other, &output).unwrap_err().contains("cùng tên"));
+        assert!(finished_result(&other, &output, false).is_none());
+        assert_eq!(fs::read(job.root.join("source.json")).unwrap(), source);
+        assert_eq!(fs::read(job.transcript()).unwrap(), b"first transcript");
+        assert!(Job::open(&first, &output).is_ok());
+        assert!(Job::open(&job.root, &output).is_ok());
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
