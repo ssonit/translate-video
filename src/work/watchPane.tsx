@@ -14,6 +14,7 @@ import {
   parentFolder,
   plainVideo,
   sameFile,
+  videoToSave,
 } from "./format";
 import { ResultMedia } from "./media";
 import { DubScript } from "./script";
@@ -33,6 +34,7 @@ export function WatchPane({
   kept,
   watched,
   savingAudio,
+  savingVideo,
   running,
   downloading,
   captioning,
@@ -50,6 +52,7 @@ export function WatchPane({
   onOpen,
   onFetchVideo,
   onDownloadAudio,
+  onDownloadVideo,
   onJoin,
   onShowVideo,
   onStop,
@@ -71,6 +74,7 @@ export function WatchPane({
   kept: KeptVersion[];
   watched: FinishedDub | undefined;
   savingAudio: boolean;
+  savingVideo: boolean;
   running: boolean;
   downloading: boolean;
   captioning: boolean;
@@ -88,6 +92,7 @@ export function WatchPane({
   onOpen: (path: string) => void;
   onFetchVideo: () => void;
   onDownloadAudio: () => void;
+  onDownloadVideo: () => void;
   onJoin: () => void;
   onShowVideo: () => void;
   onStop: () => void;
@@ -98,6 +103,12 @@ export function WatchPane({
 }) {
   const src = resultEpoch > 0 ? `${convertFileSrc(shown)}?v=${resultEpoch}` : convertFileSrc(shown);
   const textOnly = showAsTextOnly(result, watched?.path ?? "", textOnlyRun);
+  // Lưu đúng video đang xem, nên có cả ở bản đã cất. Kết quả chỉ audio thì không có nút này.
+  const saveVideo = videoToSave(result, playingKept) ? (
+    <button type="button" className="check" onClick={() => void onDownloadVideo()} disabled={savingVideo}>
+      {savingVideo ? "Đang lưu video…" : "Tải video"}
+    </button>
+  ) : null;
   return (
     <div
       className={["pane-fill watch", !playingKept && lines.length > 0 ? "has-script" : "", isAudio(shown) ? "is-audio" : "", joining ? "is-joining" : ""]
@@ -158,6 +169,7 @@ export function WatchPane({
                 <button type="button" className="check" onClick={() => void onOpen(playingKept)}>
                   Mở bằng trình phát
                 </button>
+                {saveVideo}
               </div>
               <div className="result-tools">
                 <button type="button" className="link" onClick={() => void onOpen(parentFolder(playingKept))}>
@@ -218,6 +230,7 @@ export function WatchPane({
                     Thêm chữ vào video
                   </button>
                 )}
+                {saveVideo}
                 {captioning ? (
                   <>
                     <span className="caption-wait">

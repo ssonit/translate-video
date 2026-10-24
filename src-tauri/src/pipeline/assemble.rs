@@ -572,6 +572,31 @@ pub(crate) fn save_spoken(result: &Path, dest: &Path) -> Result<(), String> {
     copy_audio(&spoken, dest)
 }
 
+// Video kết quả (.mp4) chép tới chỗ người dùng chọn trong hộp thoại lưu. Tên gõ thiếu .mp4 thì nối thêm, không đè lên phần đã gõ.
+pub(crate) fn save_video(result: &Path, dest: &Path) -> Result<(), String> {
+    if !is_mp4(result) || !file_ready(result) {
+        return Err("Chưa thấy video kết quả.".into());
+    }
+    let Some(name) = dest.file_name() else {
+        return Err("Chưa chọn chỗ lưu video.".into());
+    };
+    let dest = if is_mp4(dest) {
+        dest.to_path_buf()
+    } else {
+        let mut named = name.to_os_string();
+        named.push(".mp4");
+        dest.with_file_name(named)
+    };
+    copy_file(result, &dest, &partial_path(&dest), "video")
+}
+
+fn is_mp4(path: &Path) -> bool {
+    path.extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .eq_ignore_ascii_case("mp4")
+}
+
 pub(super) fn is_m4a(path: &Path) -> bool {
     path.extension()
         .and_then(|value| value.to_str())
@@ -643,6 +668,11 @@ fn audio_partial(out: &Path) -> PathBuf {
 }
 
 fn copy_audio(from: &Path, dest: &Path) -> Result<(), String> {
+    copy_file(from, dest, &audio_partial(dest), "audio")
+}
+
+// Chép qua file dở cạnh đích rồi đổi tên, để đích không bao giờ là file ghi dở. Lỗi nào cũng dọn file dở.
+fn copy_file(from: &Path, dest: &Path, partial: &Path, what: &str) -> Result<(), String> {
     if same_path(from, dest) {
         return Ok(());
     }
@@ -651,13 +681,15 @@ fn copy_audio(from: &Path, dest: &Path) -> Result<(), String> {
             std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
         }
     }
-    let partial = audio_partial(dest);
-    let _ = std::fs::remove_file(&partial);
-    std::fs::copy(from, &partial).map_err(|error| format!("Không ghi được audio. {error}"))?;
+    let _ = std::fs::remove_file(partial);
+    if let Err(error) = std::fs::copy(from, partial) {
+        let _ = std::fs::remove_file(partial);
+        return Err(format!("Không ghi được {what}. {error}"));
+    }
     let _ = std::fs::remove_file(dest);
-    if let Err(error) = std::fs::rename(&partial, dest) {
-        let _ = std::fs::remove_file(&partial);
-        return Err(format!("Không ghi được audio. {error}"));
+    if let Err(error) = std::fs::rename(partial, dest) {
+        let _ = std::fs::remove_file(partial);
+        return Err(format!("Không ghi được {what}. {error}"));
     }
     Ok(())
 }
@@ -1236,6 +1268,98 @@ mod tests {
         let missing = dir.join("thieu.m4a");
         assert!(save_spoken(&video, &missing).is_err());
         assert!(!file_ready(&missing));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn save_video_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("save-video-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn file_names(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn save_video_copies_the_mp4_into_a_folder_that_does_not_exist_yet() {
+        let dir = save_video_dir("copy");
+        let src = dir.join("tap.vi.mp4");
+        std::fs::write(&src, b"video-bytes").unwrap();
+        let dest = dir.join("ra").join("xong").join("ban-dich.mp4");
+        save_video(&src, &dest).unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), b"video-bytes");
+        assert_eq!(std::fs::read(&src).unwrap(), b"video-bytes");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_video_appends_mp4_to_what_was_typed_instead_of_replacing_it() {
+        let dir = save_video_dir("name");
+        let src = dir.join("tap.vi.mp4");
+        std::fs::write(&src, b"video-bytes").unwrap();
+        let out = dir.join("ra");
+        // Tên gõ trong hộp thoại lưu. "tap 1.vi" có đuôi .vi nhưng chưa phải .mp4.
+        for typed in ["ban-dich", "tap 1.vi", "Giu.MP4"] {
+            save_video(&src, &out.join(typed)).unwrap();
+        }
+        assert_eq!(file_names(&out), ["Giu.MP4", "ban-dich.mp4", "tap 1.vi.mp4"]);
+        assert_eq!(std::fs::read(out.join("tap 1.vi.mp4")).unwrap(), b"video-bytes");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_video_refuses_anything_but_a_finished_mp4_and_writes_nothing() {
+        let dir = save_video_dir("refuse");
+        let audio = dir.join("tap.vi.m4a");
+        std::fs::write(&audio, b"audio").unwrap();
+        let empty = dir.join("rong.vi.mp4");
+        std::fs::write(&empty, b"").unwrap();
+        let folder = dir.join("thu-muc.mp4");
+        std::fs::create_dir_all(&folder).unwrap();
+        let missing = dir.join("thieu.vi.mp4");
+        let dest = dir.join("ra").join("ban-dich.mp4");
+        for source in [&audio, &empty, &folder, &missing] {
+            assert!(save_video(source, &dest).is_err(), "{}", source.display());
+        }
+        assert!(!dir.join("ra").exists());
+        let good = dir.join("tap.vi.mp4");
+        std::fs::write(&good, b"video-bytes").unwrap();
+        assert!(save_video(&good, Path::new("")).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_video_replaces_an_older_copy_and_leaves_no_partial_file() {
+        let dir = save_video_dir("replace");
+        let src = dir.join("tap.vi.mp4");
+        std::fs::write(&src, b"moi").unwrap();
+        let out = dir.join("ra");
+        std::fs::create_dir_all(&out).unwrap();
+        std::fs::write(out.join("ban-dich.mp4"), b"cu-va-dai-hon").unwrap();
+        save_video(&src, &out.join("ban-dich.mp4")).unwrap();
+        assert_eq!(std::fs::read(out.join("ban-dich.mp4")).unwrap(), b"moi");
+        assert_eq!(file_names(&out), ["ban-dich.mp4"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_video_that_cannot_take_the_place_leaves_no_partial_file() {
+        let dir = save_video_dir("blocked");
+        let src = dir.join("tap.vi.mp4");
+        std::fs::write(&src, b"video-bytes").unwrap();
+        let out = dir.join("ra");
+        // Một folder đang giữ đúng tên đích: file không đặt vào được.
+        std::fs::create_dir_all(out.join("ban-dich.mp4")).unwrap();
+        assert!(save_video(&src, &out.join("ban-dich.mp4")).is_err());
+        assert_eq!(file_names(&out), ["ban-dich.mp4"]);
+        assert!(out.join("ban-dich.mp4").is_dir());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

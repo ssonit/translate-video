@@ -203,6 +203,7 @@ export default function Work({
               kept={s.kept}
               watched={watched}
               savingAudio={s.savingAudio}
+              savingVideo={s.savingVideo}
               running={s.running}
               downloading={s.downloading}
               captioning={s.captioning}
@@ -220,6 +221,7 @@ export default function Work({
               onOpen={(path) => void play.openResult(path)}
               onFetchVideo={() => void job.fetchVideo()}
               onDownloadAudio={() => void play.downloadAudio()}
+              onDownloadVideo={() => void play.downloadVideo()}
               onJoin={() => void play.joinListen()}
               onShowVideo={play.showVideo}
               onStop={() => void job.stop()}

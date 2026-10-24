@@ -140,6 +140,12 @@ export function captionedVideo(path: string) {
   return plainVideo(path).replace(/\.mp4$/i, ".chu.mp4");
 }
 
+// File video mà nút Tải video lưu: bản đã cất đang xem nếu có, không thì kết quả. Đang xem audio thì không có video để lưu.
+export function videoToSave(result: string, playingKept = "") {
+  const shown = playingKept || result;
+  return /\.mp4$/i.test(shown) ? shown : "";
+}
+
 export function sameFile(left: string, right: string) {
   const norm = (value: string) => value.replace(/\//g, "\\").replace(/\\+$/, "").toLowerCase();
   return norm(left) === norm(right);

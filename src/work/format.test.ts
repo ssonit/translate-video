@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { againPlan, draftProgress, freshSteps, showAsTextOnly, watchHeading } from "./format.ts";
+import { againPlan, draftProgress, freshSteps, showAsTextOnly, videoToSave, watchHeading } from "./format.ts";
 import type { DraftBrief } from "./types.ts";
 
 test("text only skips the voice steps", () => {
@@ -22,6 +22,22 @@ test("a text-only result keeps its own heading before the library reloads", () =
   assert.equal(showAsTextOnly("D:\\tap.vi.chu.mp4", "", false), true);
   assert.equal(watchHeading("D:\\tap.vi.mp4", "D:\\tap.vi.mp4", false), "Video đã lồng");
   assert.equal(showAsTextOnly("D:\\tap.vi.m4a", "", true), false);
+});
+
+test("Tải video saves the video on screen and never an audio file", () => {
+  const cases: [string, string, string][] = [
+    // [kết quả, bản đã cất đang xem, file sẽ lưu]
+    ["D:\\a\\tap.vi.mp4", "", "D:\\a\\tap.vi.mp4"],
+    ["D:\\a\\tap.vi.chu.mp4", "", "D:\\a\\tap.vi.chu.mp4"],
+    ["D:\\a\\TAP.VI.MP4", "", "D:\\a\\TAP.VI.MP4"],
+    ["D:\\a\\tap.vi.mp4", "D:\\a\\cu\\1\\tap.vi.mp4", "D:\\a\\cu\\1\\tap.vi.mp4"],
+    ["D:\\a\\tap.vi.mp4", "D:\\a\\cu\\1\\tap.vi.m4a", ""],
+    ["D:\\a\\tap.vi.m4a", "", ""],
+    ["", "", ""],
+  ];
+  for (const [result, kept, want] of cases) {
+    assert.equal(videoToSave(result, kept), want, `${result} | ${kept}`);
+  }
 });
 
 test("changing only text mode is something to redo", () => {

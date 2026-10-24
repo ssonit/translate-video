@@ -1764,6 +1764,16 @@ async fn save_dub_audio(path: String, dest: String) -> Result<(), String> {
     .unwrap_or_else(|_| Err("Không lưu được audio.".into()))
 }
 
+// Ghi video kết quả ra đường dẫn người dùng vừa chọn trong hộp thoại lưu.
+#[tauri::command]
+async fn save_dub_video(path: String, dest: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        pipeline::save_video(Path::new(&path), Path::new(dest.trim()))
+    })
+    .await
+    .unwrap_or_else(|_| Err("Không lưu được video.".into()))
+}
+
 // Mở file kết quả bằng chương trình mặc định của Windows, hoặc mở folder.
 #[tauri::command]
 fn open_result(app: tauri::AppHandle, path: String) -> Result<(), String> {
@@ -2060,6 +2070,7 @@ pub fn run() {
             open_result,
             join_listen,
             save_dub_audio,
+            save_dub_video,
             list_dubs,
             list_kept,
             draft_brief,

@@ -14,6 +14,7 @@ import {
   openJobFolder,
   plainVideo,
   sameFile,
+  videoToSave,
 } from "./format";
 import type { Session } from "./state";
 import type { DubStatus, FinishedDub, KeptVersion, NameList, Prefs } from "./types";
@@ -134,6 +135,26 @@ export function playbackActions(s: Session) {
       s.setOpenNote(errorText(caught));
     } finally {
       s.setSavingAudio(false);
+    }
+  }
+
+  async function downloadVideo() {
+    const source = videoToSave(s.result, s.playingKept);
+    if (!source || s.savingVideo) return;
+    s.setOpenNote("");
+    try {
+      const picked = await save({
+        title: "Lưu video",
+        defaultPath: fileName(source),
+        filters: [{ name: "Video", extensions: ["mp4"] }],
+      });
+      if (typeof picked !== "string" || picked === "") return;
+      s.setSavingVideo(true);
+      await invoke("save_dub_video", { path: source, dest: picked });
+    } catch (caught) {
+      s.setOpenNote(errorText(caught));
+    } finally {
+      s.setSavingVideo(false);
     }
   }
 
@@ -506,6 +527,7 @@ export function playbackActions(s: Session) {
     joinListen,
     showVideo,
     downloadAudio,
+    downloadVideo,
     chooseTarget,
     chooseVoice,
     previewVoice,

@@ -47,6 +47,7 @@ export function useWorkState() {
   const [textOnly, setTextOnly] = useState(false);
   const [partsRoot, setPartsRoot] = useState("");
   const [savingAudio, setSavingAudio] = useState(false);
+  const [savingVideo, setSavingVideo] = useState(false);
   const [joining, setJoining] = useState(false);
   const [joinProgress, setJoinProgress] = useState<number | null>(null);
   const [listenFile, setListenFile] = useState("");
@@ -160,6 +161,8 @@ export function useWorkState() {
     setPartsRoot,
     savingAudio,
     setSavingAudio,
+    savingVideo,
+    setSavingVideo,
     joining,
     setJoining,
     joinProgress,

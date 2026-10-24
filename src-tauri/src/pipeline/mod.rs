@@ -5,7 +5,7 @@ mod retake;
 mod speak;
 mod translate;
 
-pub(crate) use assemble::{burn_saved, join_listen, save_spoken, script_for};
+pub(crate) use assemble::{burn_saved, join_listen, save_spoken, save_video, script_for};
 pub(crate) use download::{attach_video, download, link_title, prepare_listen, DownloadEvent};
 pub(crate) use media::{
     detect_fast_path, extract, launch_for, media_duration, parse_clock, read_cues, reclaim_output,
