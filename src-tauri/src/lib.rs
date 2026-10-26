@@ -1,4 +1,5 @@
 mod deepseek_server;
+mod fit_report;
 mod job;
 mod listen;
 mod names;
@@ -1980,12 +1981,13 @@ async fn retake_saved_names(app: tauri::AppHandle, path: String) -> Result<Strin
 }
 
 #[tauri::command]
-fn dub_lines(path: String) -> Result<Vec<job::TranslatedLine>, String> {
+fn dub_lines(path: String) -> Result<Vec<fit_report::ScriptLine>, String> {
     let path = result_path(&path)?;
     if !path.is_file() {
         return Err("Chưa thấy file kết quả.".into());
     }
-    pipeline::script_for(&path)
+    let lines = pipeline::script_for(&path)?;
+    Ok(fit_report::annotate(&path, lines))
 }
 
 #[tauri::command]

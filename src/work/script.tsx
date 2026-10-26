@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState, type RefObject } from "react";
+import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { pickedEdits } from "./format";
+import { fitWarning, nextFitWarning } from "./fitWarning";
 import type { LinePick, ScriptLine } from "./types";
 
 function clock(seconds: number) {
@@ -100,6 +101,12 @@ export function DubScript({
   const keptRate = useRef({ rate: 1, src: "" });
   const [editing, setEditing] = useState<number | null>(null);
   const [draft, setDraft] = useState("");
+  const reviewRef = useRef(-1);
+  const warnings = useMemo(
+    () => lines.map((line) => captionsOnly || audioOnly ? "" : fitWarning(line)),
+    [lines, captionsOnly, audioOnly],
+  );
+  const warningIndexes = warnings.flatMap((warning, index) => warning ? [index] : []);
   spokenRef.current = spoken;
   const edits = pickedEdits(lines, picks);
 
@@ -111,6 +118,7 @@ export function DubScript({
   }
 
   useEffect(() => {
+    reviewRef.current = -1;
     followRef.current = true;
     holdRef.current = -1;
     holdScroll();
@@ -272,6 +280,17 @@ export function DubScript({
 
   return (
     <div className="script-wrap">
+      {warningIndexes.length > 0 ? (
+        <div className="script-review" role="note" aria-label="Câu cần nghe lại">
+          <p><strong>{warningIndexes.length} câu cần nghe lại</strong><span>Có câu đã tăng tốc hoặc bị cắt. Bấm Sửa để rút gọn rồi đọc lại.</span></p>
+          <button type="button" className="link" disabled={!playable || editing !== null} onClick={() => {
+            const index = nextFitWarning(warningIndexes, reviewRef.current);
+            if (index === undefined) return;
+            reviewRef.current = index;
+            playLine(index);
+          }}>Đến câu cần nghe</button>
+        </div>
+      ) : null}
       <ol className="script" ref={scriptRef} onScroll={onScriptScroll}>
         {lines.map((line, index) => {
           const pending = edits.some((edit) => edit.index === index);
@@ -288,6 +307,7 @@ export function DubScript({
               {editing === index ? (
                 <div className="script-edit">
                   <time>{clock(line.start)}</time>
+                  {warnings[index] ? <p className="script-fit-warning edit-fit-warning">{warnings[index]}</p> : null}
                   <textarea
                     aria-label={`Sửa câu lúc ${clock(line.start)}`}
                     value={draft}
@@ -316,6 +336,7 @@ export function DubScript({
                     <time>{clock(line.start)}</time>
                     <span>
                       <strong>{shown}</strong>
+                      {warnings[index] ? <em className="script-fit-warning">{warnings[index]}{pending ? " · Chờ tạo lại để kiểm tra" : ""}</em> : null}
                       {pending ? <em>Sẽ tạo lại</em> : null}
                       {line.source ? <small>{line.source}</small> : null}
                     </span>

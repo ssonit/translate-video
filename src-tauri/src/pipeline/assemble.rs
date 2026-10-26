@@ -3,9 +3,9 @@ use std::process::Command;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
-use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
+use crate::fit_report::FitEntry;
 use crate::job::{
     file_ready, is_listen_audio, is_picture_ext, read_json, write_json, Job, TranslatedLine,
 };
@@ -22,14 +22,6 @@ use super::media::{
 };
 use super::retake::open_finished;
 use super::{report, report_named, report_named_progress, report_progress, require_tool, stopped};
-
-#[derive(Serialize)]
-struct Cut {
-    line: usize,
-    text: String,
-    spoken: f64,
-    kept: f64,
-}
 
 fn fit_filter(speed: f64, keep: Option<f64>) -> String {
     let mut parts = Vec::new();
@@ -246,13 +238,13 @@ pub(super) fn fit(
         let _ = std::fs::remove_file(&fitted);
         rate = pcm.rate;
         mix_at(&mut canvas, rate, place.start, &pcm.samples);
-        if let Some(kept) = place.keep {
-            cuts.push(Cut {
-                line: index + 1,
-                text: lines[index].translation.clone(),
-                spoken: slots[index].wav_secs / place.speed,
-                kept,
-            });
+        if let Some(entry) = FitEntry::placed(
+            index + 1,
+            &lines[index].translation,
+            slots[index].wav_secs,
+            place,
+        ) {
+            cuts.push(entry);
         }
     }
     let wanted = (video_secs * f64::from(rate)).ceil() as usize;
@@ -269,12 +261,13 @@ pub(super) fn fit(
     drop_fit_wavs(&job.root);
     write_fit_mode(job, FIT_SYNC);
     write_json(&job.fit_report(), &cuts)?;
+    let cut_count = cuts.iter().filter(|entry| entry.is_cut()).count();
     let detail = if cuts.is_empty() {
         "Đã xếp tiếng.".to_string()
     } else {
         format!(
-            "Đã xếp tiếng. {} câu bị cắt bớt, xem fit-report.json.",
-            cuts.len()
+            "Đã xếp tiếng. {} câu đã tăng tốc hoặc cắt bớt ({} câu bị cắt). Xem lại trong danh sách lời thoại.",
+            cuts.len(), cut_count
         )
     };
     report(app, "fit", "done", detail);

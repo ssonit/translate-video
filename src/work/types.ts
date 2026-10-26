@@ -72,6 +72,7 @@ export type ScriptLine = {
   end: number;
   source: string;
   translation: string;
+  fit?: { cut_seconds: number; speed: number | null };
 };
 
 export type LinePick = {

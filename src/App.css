@@ -2281,6 +2281,54 @@ audio.draft-media {
   flex: 1;
 }
 
+.script-review {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  flex-shrink: 0;
+  padding: 12px 14px;
+  background: var(--warn-bg);
+  border-radius: 12px;
+}
+
+.script-review p {
+  flex: 1 1 230px;
+  margin: 0;
+}
+
+.script-review strong, .script-review span {
+  display: block;
+}
+
+.script-review strong {
+  color: var(--warn);
+  font-size: 0.88rem;
+}
+
+.script-review span {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.script .script-fit-warning {
+  margin: 4px 0;
+  color: var(--warn);
+  font-size: 0.8rem;
+  font-weight: 500;
+}
+
+.script-edit .edit-fit-warning {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.script-edit:has(.edit-fit-warning) textarea {
+  grid-column: 2;
+}
+
 .script-line {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

@@ -18,6 +18,7 @@ App desktop để chọn một video trên máy, tách tiếng, chép lời, d�
 - Chọn giọng và nghe thử: mục "Giọng Việt" trên màn chuẩn bị có ô chọn giọng (lưu lại cho lần sau) và nút Thử giọng đọc một câu mẫu.
 - Khi đọc giọng, Rust gửi danh sách câu cho cửa sổ app, cửa sổ đọc rồi gửi wav về để ghi vào folder việc. Phải giữ cửa sổ app mở khi đang lồng.
 - Màn lồng tiếng: chọn video và folder kết quả, bấm Lồng tiếng hoặc Dừng, xem trạng thái từng bước.
+- Danh sách lời thoại của video đánh dấu câu bị cắt và mức tăng tốc, có nút **Đến câu cần nghe** để duyệt lần lượt. Bấm **Sửa** để rút gọn rồi tạo lại các câu đã sửa. Báo cáo cũ vẫn hiện phần bị cắt; mức tăng tốc chỉ có ở bản ghép mới. Audio liền mạch và chế độ chỉ chữ không hiện cảnh báo co giọng.
 - Pipeline (`src-tauri/src/pipeline`): tách tiếng, chép lời, ngắt câu, sửa tên (lần đầu dừng để sửa tên bị chép sai; phụ đề và giọng dùng tên đó), lấy thuật ngữ, dịch (theo cụm 10 câu, có ngữ cảnh), đọc giọng (đọc cả lô câu một lần nạp giọng; câu quá dài được rút gọn rồi đọc lại), co độ dài (xếp câu nối tiếp, mượn khoảng trống tối đa 1,5 giây, tăng tốc tối đa 1,4 lần, câu vẫn không vừa thì cắt), ghép video.
 Mỗi video có một folder việc trong folder kết quả, đặt theo tên video:
 
