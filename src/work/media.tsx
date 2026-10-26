@@ -1,15 +1,20 @@
 import { memo, useCallback, useEffect, useState, type RefObject } from "react";
 import PlaybackSpeed from "./PlaybackSpeed";
+import VideoMenu from "./VideoMenu";
 
 // Phần tử phát đứng riêng: cửa sổ vẽ lại thì không gắn lại src, video không tải từ đầu.
 export const ResultMedia = memo(function ResultMedia({
   kind,
   src,
   mediaRef,
+  onDownload,
+  savingVideo,
 }: {
   kind: "audio" | "video";
   src: string;
   mediaRef: RefObject<HTMLMediaElement | null>;
+  onDownload?: () => void;
+  savingVideo?: boolean;
 }) {
   const [nativeFullscreen, setNativeFullscreen] = useState(false);
   useEffect(() => {
@@ -30,8 +35,11 @@ export const ResultMedia = memo(function ResultMedia({
   }
   return (
     <>
-      <video ref={bind} className="result-video" src={src} controls controlsList={nativeFullscreen ? undefined : "noplaybackrate"} preload="metadata" />
+      <video ref={bind} className={nativeFullscreen ? "result-video" : "result-video has-app-menu"} src={src} controls
+        controlsList={nativeFullscreen ? undefined : "nodownload noplaybackrate noremoteplayback"}
+        disablePictureInPicture={!nativeFullscreen} preload="metadata" />
       <PlaybackSpeed mediaRef={mediaRef} />
+      <VideoMenu mediaRef={mediaRef} onDownload={onDownload} saving={savingVideo} />
     </>
   );
 });

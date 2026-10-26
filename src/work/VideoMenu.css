@@ -1,0 +1,73 @@
+.result-video.has-app-menu::-webkit-media-controls-panel {
+  padding-right: 48px;
+}
+
+.video-menu {
+  position: absolute;
+  right: 10px;
+  bottom: 26px;
+  z-index: 3;
+  font-size: 0.9rem;
+}
+
+.video-menu-trigger {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
+  background: var(--inset);
+  color: var(--text);
+  font-size: 1.6rem;
+  line-height: 1;
+}
+
+.video-menu-trigger:hover,
+.video-menu-trigger[aria-expanded="true"] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.video-menu-popup {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  width: 220px;
+  max-width: calc(100vw - 48px);
+  padding: 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: 0 8px 24px #0006;
+}
+
+.video-menu-popup button {
+  display: block;
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 14px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+}
+
+.video-menu-popup button:hover:not(:disabled) {
+  background: var(--raised);
+}
+
+.video-menu-popup button:disabled {
+  opacity: 0.5;
+}
+
+.video-menu-popup p {
+  margin: 8px;
+  color: var(--bad);
+  font-size: 0.82rem;
+}
+
+.video-menu :focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}

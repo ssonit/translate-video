@@ -178,6 +178,9 @@ export function DubScript({
     if (!node) return;
     let lastDown = 0;
     const onPointerDown = (event: PointerEvent) => {
+      // App menus survive transcript updates; do not treat them as native
+      // controls merely because they occupy the same corner of the video.
+      if (event.target instanceof Element && event.target.closest(".video-menu, .playback-speed")) return;
       const now = performance.now();
       if (now - lastDown < 50) return;
       lastDown = now;

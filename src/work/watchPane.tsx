@@ -153,7 +153,8 @@ export function WatchPane({
           <ResultMedia key={`${shown}:${resultEpoch}`} kind="audio" src={src} mediaRef={mediaRef} />
         ) : (
           <div className="player-slot">
-            <ResultMedia key={`${shown}:${resultEpoch}`} kind="video" src={src} mediaRef={mediaRef} />
+            <ResultMedia key={`${shown}:${resultEpoch}`} kind="video" src={src} mediaRef={mediaRef}
+              onDownload={videoToSave(result, playingKept) ? onDownloadVideo : undefined} savingVideo={savingVideo} />
           </div>
         )
       ) : (
