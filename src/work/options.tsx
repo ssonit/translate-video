@@ -1,3 +1,5 @@
+import { useId } from "react";
+
 export function RunOptions({
   audioOnly,
   textOnly,
@@ -15,47 +17,35 @@ export function RunOptions({
   onTextOnly: (checked: boolean) => void;
   onBurn: (checked: boolean) => void;
 }) {
+  const group = useId();
+  const mode = textOnly ? "captions" : audioOnly ? "audio" : "video";
   return (
-    <div className="run-options">
-      <label
-        className="redo"
-        title="Không tải video. Lưu link YouTube, lấy phụ đề hoặc tiếng. Cần hình thì bấm Tải video."
-      >
-        <input
-          type="checkbox"
-          checked={audioOnly}
-          disabled={disabled}
-          onChange={(event) => onAudioOnly(event.target.checked)}
-        />
-        Chỉ lấy audio
-      </label>
-      <label className="redo" title="Giữ tiếng gốc. Đốt chữ dịch lên hình. Không đọc giọng mới.">
-        <input
-          type="checkbox"
-          checked={textOnly}
-          disabled={disabled}
-          onChange={(event) => onTextOnly(event.target.checked)}
-        />
-        Chỉ hiện chữ
-      </label>
-      <label
-        className="redo"
-        title={
-          textOnly
-            ? "Chế độ này luôn đốt chữ lên hình."
-            : audioOnly
-              ? "Ghi chữ chỉ dùng khi ghép video."
-              : "Đốt lời đã dịch lên hình. Không chọn thì vẫn có file phụ đề, thêm chữ sau cũng được."
-        }
-      >
-        <input
-          type="checkbox"
-          checked={textOnly || burnCaptions}
-          disabled={disabled || audioOnly || textOnly}
-          onChange={(event) => onBurn(event.target.checked)}
-        />
-        Ghi chữ vào video
-      </label>
+    <div className="output-options">
+      <fieldset className="output-choices" disabled={disabled}>
+        <legend>Loại kết quả</legend>
+        {[
+          { id: "video", label: "Video lồng tiếng", note: "Giọng mới cùng hình gốc" },
+          { id: "audio", label: "Audio", note: "Chỉ xuất tiếng, không cần hình" },
+          { id: "captions", label: "Video phụ đề", note: "Giữ tiếng gốc, thêm chữ" },
+        ].map((item) => (
+          <label key={item.id} className="output-choice">
+            <input type="radio" name={group} value={item.id} checked={mode === item.id} onChange={() => {
+              if (item.id === "audio") onAudioOnly(true);
+              else if (item.id === "captions") onTextOnly(true);
+              else { onAudioOnly(false); onTextOnly(false); }
+            }} />
+            <span><strong>{item.label}</strong><small>{item.note}</small></span>
+          </label>
+        ))}
+      </fieldset>
+      {mode === "video" ? (
+        <div className="run-options">
+          <label className="redo" title="Ghi chữ lên hình. Không chọn thì vẫn có file phụ đề riêng.">
+            <input type="checkbox" checked={burnCaptions} disabled={disabled} onChange={(event) => onBurn(event.target.checked)} />
+            Kèm phụ đề trên video
+          </label>
+        </div>
+      ) : null}
     </div>
   );
 }

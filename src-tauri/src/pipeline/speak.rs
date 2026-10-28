@@ -3,7 +3,7 @@ use std::sync::atomic::AtomicBool;
 
 use tauri::AppHandle;
 
-use crate::job::{file_ready, write_json, Job, TranslatedLine};
+use crate::job::{file_ready, Job, TranslatedLine};
 use crate::ollama::{
     complete, shorten_batch_prompt, shorten_batch_texts, shorten_percent, CHUNK_LINES,
 };
@@ -109,13 +109,13 @@ pub(super) fn speak(
                 changed = true;
             }
             if changed {
-                write_json(&job.translation_path(), lines)?;
+                crate::timing::write_words(&job.root, lines)?;
             }
         }
         if !changed {
             break;
         }
-        write_json(&job.translation_path(), lines)?;
+        crate::timing::write_words(&job.root, lines)?;
         synthesize_missing(app, job, lines, cancel)?;
     }
     if !touched {
@@ -176,6 +176,8 @@ pub(crate) fn speak_batch(
     if batch.is_empty() {
         return Ok(());
     }
+    let render=crate::render::RenderSettings::read(&job.root)?;
+    for (_,text,_) in &mut batch {*text=crate::render::spoken_text(&render,&job.target,text);}
     let voice = crate::selected_voice(app, &job.target)?;
     report(
         app,

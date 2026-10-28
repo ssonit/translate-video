@@ -17,13 +17,12 @@ use crate::wav::{
 };
 
 use super::download::{lines_end, timeline_secs, DownloadEvent};
-use super::media::{
-    drop_fit_wavs, media_duration, release_mix, run_ffmpeg_progress, run_tool, write_srt,
-};
+use super::fit_batch::{FitBatch, FIT_BATCH_LINES};
+use super::media::{drop_fit_wavs, media_duration, release_mix, run_ffmpeg_progress, write_srt};
 use super::retake::open_finished;
 use super::{report, report_named, report_named_progress, report_progress, require_tool, stopped};
 
-fn fit_filter(speed: f64, keep: Option<f64>) -> String {
+pub(super) fn fit_filter(speed: f64, keep: Option<f64>) -> String {
     let mut parts = Vec::new();
     if (speed - 1.0).abs() > 0.001 {
         parts.push(format!("atempo={speed:.3}"));
@@ -215,36 +214,38 @@ pub(super) fn fit(
     let mut canvas: Vec<i16> = Vec::new();
     let mut rate = 22050;
     let mut cuts = Vec::new();
-    for (index, place) in placements.iter().enumerate() {
+    for start in (0..placements.len()).step_by(FIT_BATCH_LINES) {
         stopped(cancel)?;
+        let end = (start + FIT_BATCH_LINES).min(placements.len());
         report_progress(
             app,
             "fit",
-            format!("Câu {}/{}.", index + 1, lines.len()),
-            index as f64,
+            format!("Câu {}-{end}/{}.", start + 1, lines.len()),
+            start as f64,
             lines.len() as f64,
         );
-        let fitted = job.root.join("lines").join("_fit.wav");
-        let mut command = Command::new("ffmpeg");
-        command
-            .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
-            .arg(job.line_wav(index + 1))
-            .arg("-af")
-            .arg(fit_filter(place.speed, place.keep))
-            .args(["-ac", "1", "-ar", "22050", "-c:a", "pcm_s16le"])
-            .arg(&fitted);
-        run_tool(command, Duration::from_secs(60), cancel)?;
-        let pcm = read_wav(&fitted)?;
-        let _ = std::fs::remove_file(&fitted);
-        rate = pcm.rate;
-        mix_at(&mut canvas, rate, place.start, &pcm.samples);
-        if let Some(entry) = FitEntry::placed(
-            index + 1,
-            &lines[index].translation,
-            slots[index].wav_secs,
-            place,
-        ) {
-            cuts.push(entry);
+        let sources: Vec<_> = (start..end).map(|index| job.line_wav(index + 1)).collect();
+        let batch = FitBatch::render(
+            &job.root.join("lines"),
+            &sources,
+            &placements[start..end],
+            cancel,
+        )?;
+        for (offset, fitted) in batch.paths.iter().enumerate() {
+            stopped(cancel)?;
+            let index = start + offset;
+            let place = &placements[index];
+            let pcm = read_wav(fitted)?;
+            rate = pcm.rate;
+            mix_at(&mut canvas, rate, place.start, &pcm.samples);
+            if let Some(entry) = FitEntry::placed(
+                index + 1,
+                &lines[index].translation,
+                slots[index].wav_secs,
+                place,
+            ) {
+                cuts.push(entry);
+            }
         }
     }
     let wanted = (video_secs * f64::from(rate)).ceil() as usize;
@@ -258,6 +259,8 @@ pub(super) fn fit(
             samples: canvas,
         },
     )?;
+    let spans: Vec<_> = placements.iter().map(|p| crate::audio_mix::VoiceSpan { start:p.start, end:p.start+p.played }).collect();
+    write_json(&job.root.join("voice-spans.json"), &spans)?;
     drop_fit_wavs(&job.root);
     write_fit_mode(job, FIT_SYNC);
     write_json(&job.fit_report(), &cuts)?;
@@ -464,7 +467,8 @@ pub(crate) fn join_listen(
     if !file_ready(&job.result()) {
         return Err("Chưa có video đã ghép.".into());
     }
-    let lines: Vec<TranslatedLine> = read_json(&job.translation_path())?;
+    crate::history::ensure_previous(&job.root)?;
+    let lines = crate::timing::read(&job.root)?;
     stopped(cancel)?;
     let passages = group_passages(&lines);
     if passages.is_empty() {
@@ -539,6 +543,7 @@ pub(crate) fn join_listen(
     if !file_ready(&out) {
         return Err("Không ghi được audio liền mạch.".into());
     }
+    crate::history::publish(&job.root, &out, &["Xuất audio liền mạch".into()], None, None, cancel)?;
     Ok(out.to_string_lossy().into_owned())
 }
 
@@ -696,7 +701,7 @@ fn copy_file(from: &Path, dest: &Path, what: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn write_video_output(
+pub(super) fn write_video_output(
     mut command: Command,
     out: &Path,
     total: Option<f64>,
@@ -764,7 +769,7 @@ fn same_path(left: &Path, right: &Path) -> bool {
     norm(left) == norm(right)
 }
 
-fn merge_picture(job: &Job) -> Result<PathBuf, String> {
+pub(super) fn merge_picture(job: &Job) -> Result<PathBuf, String> {
     if file_ready(&job.picture) {
         return Ok(job.picture.clone());
     }
@@ -778,6 +783,77 @@ fn merge_picture(job: &Job) -> Result<PathBuf, String> {
         return Ok(job.video.clone());
     }
     Err("Chưa có file video. Bấm Tải video trước.".into())
+}
+
+fn reusable_frame(job:&Job,now:&crate::render::RenderSettings,cancel:&AtomicBool)->Option<PathBuf>{
+    #[derive(serde::Deserialize)] struct Saved {path:PathBuf,render:crate::render::RenderSettings}
+    let saved:Saved=read_json(&job.root.join("frame-cache.json")).ok()?;
+    if !saved.render.same_frame(now){return None;}
+    let path=saved.path.canonicalize().ok()?;
+    if !path.starts_with(job.root.join(crate::job::KEPT_DIR).canonicalize().ok()?){return None;}
+    media_duration(&path,cancel).ok()?;
+    Some(path)
+}
+
+fn fitted_spans(job:&Job,lines:&[TranslatedLine],cancel:&AtomicBool)->Result<Vec<crate::audio_mix::VoiceSpan>,String>{
+    if let Ok(saved)=read_json::<Vec<crate::audio_mix::VoiceSpan>>(&job.root.join("voice-spans.json")){return Ok(saved);}
+    let slots:Vec<_>=lines.iter().enumerate().map(|(i,l)|{let pcm=read_wav(&job.line_wav(i+1))?;Ok(Slot{start:l.start,end:l.end,wav_secs:pcm.samples.len() as f64 / f64::from(pcm.rate)})}).collect::<Result<_,String>>()?;
+    Ok(place_all(&slots,media_duration(&merge_picture(job)?,cancel)?).iter().map(|p|crate::audio_mix::VoiceSpan{start:p.start,end:p.start+p.played}).collect())
+}
+
+#[cfg(test)]
+fn frame_merge(command: &mut Command, picture: &Path, root: &Path, cancel: &AtomicBool) -> Result<(), String> {
+    let render = crate::render::RenderSettings::read(root)?;
+    if render.needs_frame() {
+        let logo_input=if render.logo.enabled {command.arg("-i").arg(&render.logo.path);Some(2)} else {None};
+        let (w,h) = super::captions::probe_dimensions(picture, cancel)?;
+        command.args(["-filter_complex", &render.graph_with_logo(w,h,"",logo_input), "-map", "-0:v:0", "-map", "[vout]",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", "-threads", "2"]);
+    }
+    Ok(())
+}
+
+pub(super) fn merge_video_file(job:&Job,lines:&[TranslatedLine],cancel:&AtomicBool,on_fraction:&mut dyn FnMut(f64))->Result<(),String>{
+    let original_picture=merge_picture(job)?;
+    let render=crate::render::RenderSettings::read(&job.root)?;
+    let reused=reusable_frame(job,&render,cancel);
+    let picture=reused.clone().unwrap_or_else(||original_picture.clone());
+    let dubbed=if file_ready(&job.dub()){job.dub()}else if file_ready(&job.spoken()){job.spoken()}else{return Err("Chưa có tiếng đã lồng.".into());};
+    let total=media_duration(&picture,cancel).ok();
+    let mut command=Command::new("ffmpeg");
+    command.args(["-hide_banner","-loglevel","error","-progress","pipe:1","-nostats","-y","-i"]).arg(&picture).arg("-i").arg(dubbed);
+    let mut next_input=2;
+    let mut envelope_guard=None;
+    let mut graphs=Vec::new();
+    let mix_audio=render.audio!=Default::default();
+    if mix_audio{
+        let source_input=if render.audio.original>0.0 && picture_has_audio(&original_picture){
+            command.arg("-i").arg(&original_picture);next_input+=1;Some(2)
+        }else{None};
+        let env_input=if source_input.is_some()&&render.audio.duck{
+            let spans=fitted_spans(job,lines,cancel)?;
+            envelope_guard=Some(crate::audio_mix::prepare_envelope(&job.root,&render.audio,&spans,media_duration(&original_picture,cancel)?)?);
+            command.arg("-i").arg(&envelope_guard.as_ref().unwrap().0);
+            let index=next_input;next_input+=1;Some(index)
+        }else{None};
+        graphs.push(render.audio.graph(source_input,env_input));
+    }
+    let frame=render.needs_frame()&&reused.is_none();
+    if frame{
+        let logo_input=if render.logo.enabled{command.arg("-i").arg(&render.logo.path);Some(next_input)}else{None};
+        let (w,h)=super::captions::probe_dimensions(&picture,cancel)?;
+        graphs.push(render.graph_with_logo(w,h,"",logo_input));
+    }
+    if !graphs.is_empty(){command.args(["-filter_complex",&graphs.join(";")]);}
+    command.args(["-map",if frame{"[vout]"}else{"0:v:0"},"-map",if mix_audio{"[aout]"}else{"1:a:0"}]);
+    if frame{command.args(["-c:v","libx264","-preset","veryfast","-threads","2","-bf","0","-crf","20","-pix_fmt","yuv420p"]);}else{command.args(["-c:v","copy"]);}
+    command.args(["-c:a","aac","-ar","48000","-ac","2","-b:a","192k","-movflags","+faststart","-muxpreload","0","-muxdelay","0","-use_editlist","0"]);
+    // AAC padding can differ from the cached video's last packet by a few ms.
+    // With a known video duration, -shortest would discard that final frame on remux.
+    if let Some(seconds)=total {command.args(["-t",&seconds.to_string()]);}else{command.arg("-shortest");}
+    write_video_output(command,&job.result(),total,cancel,on_fraction)?;
+    drop(envelope_guard);
+    Ok(())
 }
 
 pub(super) fn merge(
@@ -797,62 +873,8 @@ pub(super) fn merge(
     stopped(cancel)?;
     write_srt(&job.subtitles(), lines)?;
     if !have_video {
-        let picture = merge_picture(job)?;
-        let dubbed = if file_ready(&job.dub()) {
-            job.dub()
-        } else if file_ready(&job.spoken()) {
-            job.spoken()
-        } else {
-            return Err("Chưa có tiếng đã lồng.".into());
-        };
-        report(app, "merge", "running", "Đang ghép video.");
-        let total = media_duration(&picture, cancel).ok();
-        let mut command = Command::new("ffmpeg");
-        // Giọng đọc ra 22050 Hz. AAC ở mức đó không chia hết cho đồng hồ hình, lại có mốc thời gian âm
-        // ở khung đầu (encoder delay). Player phải giật hình cho khớp tiếng. 48000 Hz thì mỗi khung
-        // tiếng rơi đúng vạch 30k, và không ghi edit list nên mốc bắt đầu từ 0.
-        command
-            .args([
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-progress",
-                "pipe:1",
-                "-nostats",
-                "-y",
-                "-i",
-            ])
-            .arg(&picture)
-            .arg("-i")
-            .arg(dubbed)
-            .args([
-                "-map",
-                "0:v:0",
-                "-map",
-                "1:a:0",
-                "-c:v",
-                "copy",
-                "-c:a",
-                "aac",
-                "-ar",
-                "48000",
-                "-ac",
-                "2",
-                "-b:a",
-                "192k",
-                "-shortest",
-                "-movflags",
-                "+faststart",
-                "-muxpreload",
-                "0",
-                "-muxdelay",
-                "0",
-                "-use_editlist",
-                "0",
-            ]);
-        write_video_output(command, &job.result(), total, cancel, &mut |fraction| {
-            report_progress(app, "merge", "Đang ghép video.", fraction, 1.0);
-        })?;
+        report(app,"merge","running","Đang ghép video.");
+        merge_video_file(job,lines,cancel,&mut |fraction|report_progress(app,"merge","Đang ghép video.",fraction,1.0))?;
     }
     release_mix(&job.root);
     if burn && !file_ready(&job.captioned()) {
@@ -899,12 +921,13 @@ fn burn_original_with(
     }
     write_srt(&job.subtitles(), lines)?;
     stopped(cancel)?;
-    burn_file(
+    burn_file_with(
         &picture,
         &job.subtitles(),
         &job.captioned(),
         cancel,
         on_fraction,
+        true,
     )
 }
 
@@ -938,11 +961,13 @@ pub(crate) fn burn_saved(
     cancel: &AtomicBool,
 ) -> Result<String, String> {
     let result = plain_result(result);
+    if let Some(root) = result.parent() { crate::history::ensure_previous(root)?; }
     if !file_ready(&result) {
         return Err("Chưa thấy video đã lồng.".into());
     }
     let out = crate::job::captioned_path(&result);
     if file_ready(&out) {
+        if let Some(root) = out.parent() { crate::history::publish(root, &out, &["Thêm phụ đề".into()], None, None, cancel)?; }
         return Ok(out.to_string_lossy().into_owned());
     }
     require_tool("ffmpeg")?;
@@ -952,6 +977,7 @@ pub(crate) fn burn_saved(
     burn_file(&result, &srt, &out, cancel, &mut |fraction| {
         caption_report(app, Some(fraction))
     })?;
+    if let Some(root) = out.parent() { crate::history::publish(root, &out, &["Thêm phụ đề".into()], None, None, cancel)?; }
     Ok(out.to_string_lossy().into_owned())
 }
 
@@ -970,9 +996,8 @@ pub(super) fn plain_result(path: &Path) -> PathBuf {
 fn ensure_srt(result: &Path) -> Result<PathBuf, String> {
     let srt = result.with_extension("srt");
     if let Some(dir) = result.parent() {
-        if let Ok(lines) =
-            crate::job::read_json::<Vec<TranslatedLine>>(&dir.join("translation.json"))
-        {
+        if dir.join("translation.json").is_file() {
+            let lines = crate::timing::read(dir)?;
             write_srt(&srt, &lines)?;
         }
     }
@@ -996,7 +1021,20 @@ fn burn_file(
     cancel: &AtomicBool,
     on_fraction: &mut dyn FnMut(f64),
 ) -> Result<(), String> {
-    let name = srt
+    burn_file_with(video, srt, out, cancel, on_fraction, false)
+}
+
+fn burn_file_with(
+    video: &Path, srt: &Path, out: &Path, cancel: &AtomicBool,
+    on_fraction: &mut dyn FnMut(f64), transform: bool,
+) -> Result<(), String> {
+    let render = crate::render::RenderSettings::read(srt.parent().unwrap_or(Path::new(".")))?;
+    let source_size = super::captions::probe_dimensions(video, cancel)?;
+    let prepared = if transform {
+        let (w,h) = render.dimensions(source_size.0, source_size.1);
+        super::captions::prepare_for(srt,w,h,&render)?
+    } else { super::captions::prepare(video, srt, cancel)? };
+    let name = prepared.0
         .file_name()
         .and_then(|value| value.to_str())
         .ok_or("Chưa có phụ đề.")?;
@@ -1022,6 +1060,17 @@ fn burn_file(
             "-c:v", "libx264", "-preset", "veryfast", "-threads", "2", "-crf", "20", "-pix_fmt",
             "yuv420p",
         ]);
+    if transform && render.needs_frame() {
+        // Replace the simple overlay with a graph that frames first and adds text last.
+        // FFmpeg forbids combining -vf and -filter_complex for the same stream.
+        let mut framed = Command::new("ffmpeg");
+        framed.args(["-hide_banner", "-loglevel", "error", "-progress", "pipe:1", "-nostats", "-y", "-i"])
+            .arg(video);
+        let logo_input=if render.logo.enabled {framed.arg("-i").arg(&render.logo.path);Some(1)} else {None};
+        framed.args(["-filter_complex", &render.graph_with_logo(source_size.0, source_size.1, &format!(",{}", subtitle_filter(name)),logo_input),
+                "-map", "[vout]", "-map", "0:a?", "-c:v", "libx264", "-preset", "veryfast", "-threads", "2", "-crf", "20", "-pix_fmt", "yuv420p"]);
+        command = framed;
+    }
     if mp4_can_copy_audio(video) {
         command.args(["-c:a", "copy"]);
     } else {
@@ -1077,7 +1126,7 @@ fn mp4_can_copy_audio(path: &Path) -> bool {
     matches!(codec.as_str(), "aac" | "mp3" | "ac3" | "eac3" | "alac")
 }
 
-fn picture_has_audio(path: &Path) -> bool {
+pub(super) fn picture_has_audio(path: &Path) -> bool {
     let output = Command::new("ffprobe")
         .args([
             "-v",
@@ -1106,7 +1155,7 @@ fn partial_path(out: &Path) -> PathBuf {
 }
 
 // Tên file tương đối, ffmpeg chạy trong folder chứa phụ đề. Dấu nháy thuộc cú pháp bộ lọc.
-fn subtitle_filter(file_name: &str) -> String {
+pub(super) fn subtitle_filter(file_name: &str) -> String {
     let mut escaped = String::new();
     for ch in file_name.chars() {
         if matches!(ch, '\\' | '\'' | ':') {
@@ -1115,7 +1164,7 @@ fn subtitle_filter(file_name: &str) -> String {
         escaped.push(ch);
     }
     format!(
-        "subtitles=filename='{escaped}':charenc=UTF-8:force_style='FontName=Arial,FontSize=18,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=2,Shadow=0,Alignment=2,MarginV=28'"
+        "ass=filename='{escaped}'"
     )
 }
 
@@ -1195,8 +1244,7 @@ mod tests {
     fn subtitle_filter_escapes_quotes_and_keeps_spaces() {
         let filter = subtitle_filter("tap 1 demo.vi.srt");
         assert!(filter.contains("filename='tap 1 demo.vi.srt'"));
-        assert!(filter.contains("charenc=UTF-8"));
-        assert!(filter.contains("FontName=Arial"));
+        assert!(filter.starts_with("ass=filename="));
         let quoted = subtitle_filter("it's.srt");
         assert!(quoted.contains("filename='it\\'s.srt'"));
     }
@@ -1209,6 +1257,111 @@ mod tests {
             plain_result(&PathBuf::from(r"D:\out\tap 1.vi.chu.mp4")),
             PathBuf::from(r"D:\out\tap 1.vi.mp4")
         );
+    }
+
+    #[test]
+    fn framed_original_burn_keeps_audio_and_cleans_temporary_files() {
+        let dir = save_video_dir("styled-frame");
+        let source = dir.join("source.mp4");
+        assert!(Command::new("ffmpeg").args(["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=960x540:r=4:d=1",
+            "-f", "lavfi", "-i", "sine=frequency=440:duration=1", "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac"])
+            .arg(&source).status().unwrap().success());
+        let job = Job { root: dir.clone(), video: source.clone(), picture: source, target: "vi".into() };
+        let settings = crate::render::RenderSettings { aspect: "9:16".into(), color: "#ffcc00".into(),
+            background: true, caption_y: 72.0, font: "Tahoma".into(), ..Default::default() };
+        write_json(&dir.join("render.json"), &settings).unwrap();
+        let lines = vec![TranslatedLine { start: 0.0, end: 1.0, source: "Hello".into(), translation: "Một câu chuyện mới bắt đầu từ đây.".into() }];
+        burn_original(&job, &lines, &AtomicBool::new(false)).unwrap();
+        // Exercise the same mapping used by speech merge: replace picture video
+        // with the framed graph, while retaining the second input's audio.
+        let mut command = Command::new("ffmpeg");
+        command.args(["-v","error","-y","-i"]).arg(&job.picture).arg("-i").arg(&job.picture)
+            .args(["-map","0:v:0","-map","1:a:0","-c:v","copy","-c:a","aac"]);
+        frame_merge(&mut command, &job.picture, &job.root, &AtomicBool::new(false)).unwrap();
+        command.arg(job.result());
+        let encoded = command.output().unwrap();
+        assert!(encoded.status.success(), "{}", String::from_utf8_lossy(&encoded.stderr));
+        assert_eq!(super::super::captions::probe_dimensions(&job.result(), &AtomicBool::new(false)).unwrap(), (540,960));
+
+        let probe = Command::new("ffprobe").args(["-v","error","-show_streams","-of","json"]).arg(job.captioned()).output().unwrap();
+        let info: serde_json::Value = serde_json::from_slice(&probe.stdout).unwrap();
+        let streams = info["streams"].as_array().unwrap();
+        let v = streams.iter().find(|s| s["codec_type"] == "video").unwrap();
+        assert_eq!(v["width"], 540);
+        assert_eq!(v["height"], 960);
+        assert!(streams.iter().any(|s| s["codec_type"] == "audio"));
+        assert!(!partial_path(&job.captioned()).exists());
+        assert!(!std::fs::read_dir(&dir).unwrap().flatten().any(|e| e.path().extension().is_some_and(|x| x == "ass")));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn adaptive_caption_burn_preserves_aspect_and_cleans_overlay() {
+        if crate::program_path("ffmpeg").is_none() || crate::program_path("ffprobe").is_none() {
+            return;
+        }
+        let dir = save_video_dir("caption-aspect");
+        let srt = dir.join("captions.srt");
+        write_srt(&srt, &[TranslatedLine {
+            start: 0.0, end: 6.0, source: "Original".into(),
+            translation: "Đây là câu phụ đề tiếng Việt để kiểm tra video ngang và video dọc. Hình phải giữ đúng tỉ lệ, chữ xuống dòng và không bị cắt ở hai bên.".into(),
+        }]).unwrap();
+        for (name, width, height) in [("landscape", 1920, 1080), ("portrait", 1080, 1920), ("square", 1080, 1080)] {
+            let src = dir.join(format!("{name}.mp4"));
+            let out = dir.join(format!("{name}.chu.mp4"));
+            let mut source = Command::new("ffmpeg");
+            source.args(["-v", "error"]);
+            if let Some(real) = std::env::var_os("DUB_CAPTION_REVIEW_SOURCE") {
+                // Optional manual QA uses an explicitly supplied local source,
+                // copied into this test's private directory; no model/API calls.
+                source.arg("-i").arg(real).args(["-t", "6", "-an", "-vf"])
+                    .arg(format!("scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1"));
+            } else {
+                source.args(["-f", "lavfi", "-i"])
+                    .arg(format!("color=c=0x263344:s={width}x{height}:r=2:d=6"));
+            }
+            assert!(source.args(["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p"])
+                .arg(&src).status().unwrap().success());
+            burn_file(&src, &srt, &out, &AtomicBool::new(false), &mut |_| {}).unwrap();
+            let probe = Command::new("ffprobe").args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height,display_aspect_ratio", "-of", "json"])
+                .arg(&out).output().unwrap();
+            assert!(probe.status.success());
+            let info: serde_json::Value = serde_json::from_slice(&probe.stdout).unwrap();
+            assert_eq!(info["streams"][0]["width"], width);
+            assert_eq!(info["streams"][0]["height"], height);
+            assert!(!partial_path(&out).exists());
+            assert!(!std::fs::read_dir(&dir).unwrap().flatten().any(|entry| entry.file_name().to_string_lossy().ends_with(".ass")));
+            if std::env::var_os("DUB_CAPTION_REVIEW").is_some() {
+                assert!(Command::new("ffmpeg").args(["-v", "error", "-ss", "1", "-i"]).arg(&out)
+                    .args(["-frames:v", "1"]).arg(dir.join(format!("{name}.png"))).status().unwrap().success());
+            }
+        }
+        // A failed encode must also release the overlay used only by this burn.
+        // Invalid caption timing must fail before touching a finished output,
+        // its source, the source SRT, or cached speech.
+        let preserved = dir.join("portrait.chu.mp4");
+        let result_before = std::fs::read(&preserved).unwrap();
+        let source_before = std::fs::read(dir.join("portrait.mp4")).unwrap();
+        let srt_before = std::fs::read(&srt).unwrap();
+        let bad_srt = dir.join("invalid.srt");
+        std::fs::write(&bad_srt, "1\n00:00:02,000 --> 00:00:01,000\nKhông được bỏ qua chữ").unwrap();
+        let error = burn_file(&dir.join("portrait.mp4"), &bad_srt, &preserved, &AtomicBool::new(false), &mut |_| {}).unwrap_err();
+        assert!(error.contains("Phụ đề 1:"), "{error}");
+        assert_eq!(std::fs::read(&preserved).unwrap(), result_before);
+        assert_eq!(std::fs::read(dir.join("portrait.mp4")).unwrap(), source_before);
+        assert_eq!(std::fs::read(&srt).unwrap(), srt_before);
+        assert!(!partial_path(&preserved).exists());
+        let missing_parent = dir.join("missing-parent").join("failed.mp4");
+        assert!(burn_file(&dir.join("portrait.mp4"), &srt, &missing_parent, &AtomicBool::new(false), &mut |_| {}).is_err());
+        assert!(!std::fs::read_dir(&dir).unwrap().flatten().any(|entry| entry.file_name().to_string_lossy().ends_with(".ass")));
+        let cancelled = dir.join("cancelled.mp4");
+        assert_eq!(burn_file(&dir.join("portrait.mp4"), &srt, &cancelled, &AtomicBool::new(true), &mut |_| {}).unwrap_err(), "Đã dừng.");
+        assert!(!cancelled.exists());
+        if std::env::var_os("DUB_CAPTION_REVIEW").is_some() {
+            println!("Caption review: {}", dir.display());
+        } else {
+            std::fs::remove_dir_all(&dir).unwrap();
+        }
     }
 
     #[test]
@@ -1760,6 +1913,64 @@ mod tests {
         assert!(srt_has_cues(&job.subtitles()));
         assert!(!job.result().exists());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rotated_unicode_source_burns_and_saves_with_display_dimensions() {
+        if !ffmpeg_ok() || crate::program_path("ffprobe").is_none() {
+            return;
+        }
+        let (dir, mut job) = text_job("nguồn xoay có dấu");
+        let original = dir.join("nguồn ban đầu.mp4");
+        make_picture(&original, true);
+        job.picture = dir.join("hình xoay 90 độ.mp4");
+        let made = Command::new("ffmpeg")
+            .args(["-hide_banner", "-loglevel", "error", "-y", "-display_rotation", "90", "-i"])
+            .arg(&original)
+            .args(["-c", "copy"])
+            .arg(&job.picture)
+            .status().unwrap();
+        assert!(made.success());
+        let cancel = AtomicBool::new(false);
+        assert_eq!(super::super::captions::probe_dimensions(&job.picture, &cancel).unwrap(), (240, 320));
+        burn_original(&job, &[TranslatedLine {
+            start: 0.0, end: 1.0, source: "hello".into(),
+            translation: "Một câu tiếng Việt".into(),
+        }], &cancel).unwrap();
+        assert_eq!(super::super::captions::probe_dimensions(&job.captioned(), &cancel).unwrap(), (240, 320));
+        let destination = dir.join("Kết quả đã lưu").join("Tập một có chữ.mp4");
+        save_video(&job.captioned(), &destination).unwrap();
+        assert_eq!(std::fs::read(&destination).unwrap(), std::fs::read(job.captioned()).unwrap());
+        let decoded = Command::new("ffmpeg")
+            .args(["-hide_banner", "-loglevel", "error", "-i"])
+            .arg(&destination)
+            .args(["-map", "0:v:0", "-map", "0:a:0", "-f", "null", "-"])
+            .output().unwrap();
+        assert!(decoded.status.success(), "{}", String::from_utf8_lossy(&decoded.stderr));
+        assert!(!partial_path(&job.captioned()).exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn read_only_destination_keeps_old_video_and_cleans_temp() {
+        let dir = save_video_dir("readonly");
+        let source = dir.join("nguồn.mp4");
+        let destination = dir.join("kết quả.mp4");
+        std::fs::write(&source, b"new-video").unwrap();
+        std::fs::write(&destination, b"previous-video").unwrap();
+        let mut permissions = std::fs::metadata(&destination).unwrap().permissions();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(&destination, permissions).unwrap();
+        let result = save_video(&source, &destination);
+        let mut permissions = std::fs::metadata(&destination).unwrap().permissions();
+        permissions.set_readonly(false);
+        std::fs::set_permissions(&destination, permissions).unwrap();
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(&destination).unwrap(), b"previous-video");
+        assert_eq!(std::fs::read(&source).unwrap(), b"new-video");
+        assert_eq!(file_names(&dir).len(), 2);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

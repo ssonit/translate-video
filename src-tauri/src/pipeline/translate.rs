@@ -70,6 +70,8 @@ fn invalidate_changed_lines(job: &Job, lines: &[Cue]) {
 }
 
 pub(super) fn drop_mix(job: &Job) {
+    let _ = std::fs::remove_file(job.root.join("voice-spans.json"));
+    let _ = std::fs::remove_file(job.root.join("frame-cache.json"));
     let _ = std::fs::remove_file(job.fit_report());
     let _ = std::fs::remove_file(job.dub());
 }
@@ -120,9 +122,23 @@ pub(crate) fn prepare_again(
     if !retranscribe && !text_changed && !names_changed && !voice_changed && !mode_changed {
         return Err("Không có gì để làm lại.".into());
     }
+    if !retranscribe && !text_changed && job.root.join("editing.json").exists() {
+        crate::editing::Editing::load(&job.root)?;
+    }
+    if retranscribe || text_changed {
+        crate::editing::archive(job)?;
+    }
     crate::job::archive_exports(&job.root)?;
     drop_mix(job);
     if retranscribe {
+        // A new transcription is a new cue sequence. Preserve the old file in
+        // the export archive, then remove its editing layer rather than guess IDs.
+        let timing = job.root.join("timing.json");
+        if timing.is_file() {
+            let archive = job.root.join("cu").join(format!("timing-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos()));
+            std::fs::create_dir_all(&archive).map_err(|e| e.to_string())?;
+            std::fs::rename(&timing, archive.join("timing.json")).map_err(|e| e.to_string())?;
+        }
         for path in [
             job.transcript(),
             job.lines_path(),
@@ -142,6 +158,20 @@ pub(crate) fn prepare_again(
         remove_line_wavs(job);
     } else if voice_changed {
         remove_line_wavs(job);
+    }
+    if names_changed {
+        if let Some(mut doc) = crate::editing::Editing::load(&job.root)? {
+            let fixes = usable_names(names);
+            for cue in &mut doc.cues {
+                cue.line.source = apply_names(&cue.line.source, &fixes);
+                let changed = apply_names(&cue.line.translation, &fixes);
+                if changed != cue.line.translation {
+                    cue.line.translation = changed;
+                    let _ = std::fs::remove_file(job.root.join("lines").join(format!("{:03}.wav", cue.slot)));
+                }
+            }
+            doc.save(&job.root)?;
+        }
     }
     write_json(
         &job.names_path(),
@@ -189,7 +219,13 @@ pub(super) fn renamed(lines: &[Cue], names: &[NameFix]) -> Vec<Cue> {
 }
 
 fn clear_name_review(app: &AppHandle) {
-    app.state::<DubControl>().update(|snap| snap.names = None);
+    let mut pause = crate::RunPause::default();
+    app.state::<DubControl>().update(|snap| {
+        snap.names = None;
+        snap.pause.resume(crate::now_ms());
+        pause = snap.pause.clone();
+    });
+    let _ = app.emit("dub-pause", pause);
 }
 
 fn wait_for_names(
@@ -201,8 +237,13 @@ fn wait_for_names(
     let (sender, receiver) = mpsc::channel();
     let pending = NamesPending { names, note };
     app.state::<DubControl>().park_name_reply(sender);
-    app.state::<DubControl>()
-        .update(|snap| snap.names = Some(pending.clone()));
+    let mut pause = crate::RunPause::default();
+    app.state::<DubControl>().update(|snap| {
+        snap.names = Some(pending.clone());
+        snap.pause.since_ms = Some(crate::now_ms());
+        pause = snap.pause.clone();
+    });
+    let _ = app.emit("dub-pause", pause);
     let _ = app.emit("names-review", &pending);
     loop {
         if let Err(error) = stopped(cancel) {

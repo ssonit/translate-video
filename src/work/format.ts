@@ -1,4 +1,4 @@
-import type { DraftBrief, FinishedDub, KeptVersion, LinePick, NameFix, ScriptLine, StepView } from "./types";
+import type { DraftBrief, FinishedDub, KeptVersion, LineEdit, LinePick, NameFix, ScriptLine, StepView } from "./types";
 
 // weight: rough share of a whole run, used to blend the steps into one overall estimate.
 const STEPS = [
@@ -30,14 +30,17 @@ export const LANGUAGES = [
 ];
 
 export function pickedEdits(lines: ScriptLine[], picks: Record<number, LinePick>) {
-  const edits: { index: number; text: string }[] = [];
+  const edits: LineEdit[] = [];
   for (const [key, pick] of Object.entries(picks)) {
     const index = Number(key);
     const line = lines[index];
     if (!line) continue;
     const text = pick.text.trim();
-    if (text === line.translation.trim() && !pick.again) continue;
-    edits.push({ index, text });
+    const moved = pick.start !== undefined && pick.end !== undefined && (pick.start !== line.start || pick.end !== line.end);
+    if (text === line.translation.trim() && !pick.again && !moved) continue;
+    edits.push({ index, text, again: pick.again || text !== line.translation.trim(), revision: pick.revision ?? line.revision,
+      ...(line.id ? { id: line.id } : {}),
+      ...(moved ? { start: pick.start, end: pick.end } : {}) });
   }
   edits.sort((left, right) => left.index - right.index);
   return edits;
@@ -67,6 +70,21 @@ export function stepFraction(step: StepView) {
   return 0;
 }
 
+export function workflowPhases(steps: StepView[], waitingForNames = false) {
+  return [
+    { id: "transcribe", label: "Chép lời", ids: ["extract", "transcribe", "split"] },
+    { id: "names", label: "Kiểm tra tên", ids: ["names"] },
+    { id: "translate", label: "Dịch và đọc", ids: ["terms", "translate", "speak", "fit"] },
+    { id: "merge", label: "Xuất kết quả", ids: ["merge"] },
+  ].map((phase) => {
+    const children = steps.filter((step) => phase.ids.includes(step.id));
+    const active = children.find((step) => step.state === "error") ?? children.find((step) => step.state === "running");
+    const state = phase.id === "names" && waitingForNames ? "waiting"
+      : active?.state ?? (children.some((step) => step.state === "pending") ? "pending" : "done");
+    return { id: phase.id, label: phase.label, state };
+  });
+}
+
 // Remaining time of one step, from how fast it has moved so far. Null until the rate is believable.
 export function stepRemaining(step: StepView, now: number) {
   if (step.state !== "running" || step.progress === null || step.startedAt === null) return null;
@@ -75,13 +93,13 @@ export function stepRemaining(step: StepView, now: number) {
   return (elapsed * (1 - step.progress)) / step.progress;
 }
 
-export function overallEstimate(steps: StepView[], startedAt: number | null, now: number) {
+export function overallEstimate(steps: StepView[], startedAt: number | null, now: number, pause = { pausedMs: 0, sinceMs: null as number | null }) {
   const active = steps.filter((step) => step.state !== "skipped");
   const total = active.reduce((sum, step) => sum + step.weight, 0);
   const done = active.reduce((sum, step) => sum + step.weight * stepFraction(step), 0);
   const fraction = total > 0 ? done / total : 0;
-  const elapsed = startedAt === null ? 0 : (now - startedAt) / 1000;
-  const remaining = done > 0 && elapsed >= 5 ? ((total - done) * elapsed) / done : null;
+  const elapsed = startedAt === null ? 0 : Math.max(0, ((pause.sinceMs ?? now) - startedAt - pause.pausedMs) / 1000);
+  const remaining = pause.sinceMs === null && done > 0 && elapsed >= 5 ? ((total - done) * elapsed) / done : null;
   return { fraction, elapsed, remaining };
 }
 

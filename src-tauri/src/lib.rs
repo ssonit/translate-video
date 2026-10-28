@@ -1,3 +1,7 @@
+mod runtime_paths;
+mod media_assets;
+mod audio_mix;
+mod render;
 mod deepseek_server;
 mod fit_report;
 mod job;
@@ -9,6 +13,9 @@ mod pipeline;
 mod piper;
 mod speech;
 mod timeline;
+mod timing;
+mod editing;
+mod history;
 mod tts;
 mod watch;
 mod wav;
@@ -202,6 +209,38 @@ struct SavedProvider {
     api_key: String,
     #[serde(default)]
     model: String,
+}
+
+// A queued job stores only service/model/options; keys stay in choice.json.
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TranslationRun {
+    provider: String,
+    model: String,
+    use_terms: bool,
+}
+
+impl TranslationRun {
+    fn resolve(&self, saved: TranslationChoice) -> Result<TranslationChoice, String> {
+        if !matches!(
+            self.provider.as_str(),
+            "local" | "deepseek-local" | "gemini" | "openai" | "claude" | "deepseek"
+        ) {
+            return Err("Không rõ dịch vụ dịch trong hàng đợi.".into());
+        }
+        let mut choice = if saved.provider == self.provider {
+            saved
+        } else {
+            saved.switched(&self.provider).map_err(|_| {
+                format!(
+                    "Chưa có API key cho dịch vụ {} của video trong hàng đợi. Lưu key rồi thử lại.",
+                    self.provider
+                )
+            })?
+        };
+        choice.model = clean_model(&self.provider, &self.model)?;
+        Ok(choice)
+    }
 }
 
 impl TranslationChoice {
@@ -647,9 +686,7 @@ pub(crate) fn program_path(name: &str) -> Option<PathBuf> {
 // Voices of one target language live in voices/<code>. The code is checked against the known targets.
 fn bundled_voice_dir(lang: &str) -> Option<PathBuf> {
     let code = pipeline::clean_target(lang).0;
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../voices")
-        .join(code);
+    let path = runtime_paths::tool_dir(&format!("voices/{code}"));
     path.is_dir().then_some(path)
 }
 
@@ -782,7 +819,7 @@ const WHISPER_MODELS: [&str; 5] = [
 ];
 
 fn bundled_whisper_dir() -> Option<PathBuf> {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../whisper");
+    let path = runtime_paths::tool_dir("whisper");
     path.is_dir().then_some(path)
 }
 
@@ -1027,6 +1064,22 @@ struct DubSnapshot {
     audio_only: bool,
     names: Option<names::NamesPending>,
     text_only: bool,
+    pause: RunPause,
+}
+
+#[derive(Default, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RunPause {
+    paused_ms: u64,
+    since_ms: Option<u64>,
+}
+
+impl RunPause {
+    fn resume(&mut self, now: u64) {
+        if let Some(since) = self.since_ms.take() {
+            self.paused_ms += now.saturating_sub(since);
+        }
+    }
 }
 
 impl DubControl {
@@ -1152,6 +1205,8 @@ async fn start_dub(
     audio_only: Option<bool>,
     skip_translate: Option<bool>,
     text_only: Option<bool>,
+    translation: Option<TranslationRun>,
+    render: Option<render::RenderSettings>,
 ) -> Result<String, String> {
     let target = target.unwrap_or_else(|| "vi".into());
     let redo = redo.unwrap_or(false);
@@ -1184,7 +1239,10 @@ async fn start_dub(
         });
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let prefs = prefs_path(&app).ok().map(|path| read_prefs(&path));
-            let use_terms = prefs.as_ref().map(|item| item.use_terms).unwrap_or(false);
+            let use_terms = translation
+                .as_ref()
+                .map(|item| item.use_terms)
+                .unwrap_or_else(|| prefs.as_ref().map(|item| item.use_terms).unwrap_or(false));
             let skip_translate = skip_translate.unwrap_or_else(|| {
                 prefs
                     .as_ref()
@@ -1197,6 +1255,14 @@ async fn start_dub(
                     .map(|item| item.burn_captions)
                     .unwrap_or(false)
             });
+            let choice = if skip_translate {
+                None
+            } else {
+                translation
+                    .as_ref()
+                    .map(|config| config.resolve(read_choice(&choice_path(&app)?)))
+                    .transpose()?
+            };
             pipeline::run(
                 &app,
                 Path::new(&video),
@@ -1208,6 +1274,8 @@ async fn start_dub(
                 audio_only,
                 text_only,
                 skip_translate,
+                choice,
+                render.unwrap_or_default(),
                 &control.cancel,
             )
         }));
@@ -1315,6 +1383,8 @@ async fn start_again(
                 audio_only,
                 text_only,
                 skip_translate,
+                None,
+                render::RenderSettings::read(&root)?,
                 &control.cancel,
             )
         }));
@@ -1332,9 +1402,49 @@ async fn start_again(
 
 #[tauri::command]
 fn list_kept(result: String) -> Result<Vec<job::KeptVersion>, String> {
-    let file = result_path(&result)?;
+    let file = PathBuf::from(&result);
     let root = file.parent().ok_or("Chưa thấy folder việc.")?;
+    if !file.is_file() { job::Job::reopen(root)?; }
     job::list_kept(root)
+}
+
+fn version_idle(app: &tauri::AppHandle) -> Result<(), String> {
+    let control = app.state::<DubControl>();
+    if control.running.load(Ordering::SeqCst) || control.captioning.load(Ordering::SeqCst) { return Err("Chờ việc đang chạy xong rồi đổi phiên bản hoặc nạp cấu hình.".into()); }
+    Ok(())
+}
+
+#[tauri::command]
+async fn version_details(result: String, path: String) -> Result<history::Details, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = history::root_for(Path::new(&result))?;
+        history::details(&root, Path::new(&path))
+    }).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn select_version(app: tauri::AppHandle, result: String, path: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        version_idle(&app)?;
+        let root = history::root_for(Path::new(&result))?;
+        let file = history::member(&root, Path::new(&path))?;
+        app.asset_protocol_scope().allow_file(&file).map_err(|e| e.to_string())?;
+        version_idle(&app)?;
+        Ok(history::display(&file))
+    }).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn version_config(app: tauri::AppHandle, result: String, path: String) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        version_idle(&app)?;
+        let root = history::root_for(Path::new(&result))?;
+        let detail = history::details(&root, Path::new(&path))?;
+        let saved = detail.config.ok_or("Bản cũ chưa có cấu hình đã xác nhận; không tự đoán để nạp.")?;
+        let job = job::Job::reopen(&root)?;
+        version_idle(&app)?;
+        Ok(serde_json::json!({"video":job.video,"outputDir":history::display(root.parent().ok_or("Không thấy folder kết quả.")?),"target":saved.target,"voice":saved.voice,"useTerms":saved.use_terms,"skipTranslate":saved.skip_translate,"textOnly":saved.text_only,"audioOnly":saved.audio_only,"burnCaptions":saved.burn_captions,"render":saved.render}))
+    }).await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -1353,6 +1463,8 @@ async fn finished_result(
     audio_only: Option<bool>,
     burn: Option<bool>,
     skip_translate: Option<bool>,
+    use_terms: Option<bool>,
+    render: Option<render::RenderSettings>,
 ) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let target = pipeline::clean_target(target.as_deref().unwrap_or("vi")).0;
@@ -1362,7 +1474,7 @@ async fn finished_result(
             voice: voice
                 .filter(|name| !name.is_empty())
                 .unwrap_or_else(|| selected_voice(&app, target).unwrap_or_default()),
-            use_terms: prefs.use_terms,
+            use_terms: use_terms.unwrap_or(prefs.use_terms),
             skip_translate: skip_translate.unwrap_or(prefs.skip_translate),
             text_only: text_only.unwrap_or(false),
         };
@@ -1375,7 +1487,8 @@ async fn finished_result(
         );
         Ok(result
             .filter(|path| {
-                pipeline::media_duration(Path::new(path), &AtomicBool::new(false)).is_ok()
+                render::RenderSettings::read(Path::new(path).parent().unwrap_or(Path::new("."))).is_ok_and(|saved| saved.matches_output(&render.clone().unwrap_or_default(),audio_only.unwrap_or(false),settings.text_only,&settings.target))
+                    && pipeline::media_duration(Path::new(path), &AtomicBool::new(false)).is_ok()
             })
             .unwrap_or_default())
     })
@@ -1451,7 +1564,7 @@ async fn start_watch(
 // Default folder for results: `output` at the project root, made on first ask.
 #[tauri::command]
 fn default_output_dir() -> Result<String, String> {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../output");
+    let path = runtime_paths::data_root().join("output");
     std::fs::create_dir_all(&path).map_err(|error| error.to_string())?;
     let path = path.canonicalize().map_err(|error| error.to_string())?;
     Ok(path
@@ -1744,6 +1857,15 @@ fn result_path(path: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 
+// User-selected local video; allow only this exact file in the asset scope.
+#[tauri::command]
+fn allow_video_preview(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    let path = PathBuf::from(path);
+    let ext = path.extension().and_then(|x| x.to_str()).unwrap_or("").to_ascii_lowercase();
+    if !path.is_file() || !job::is_picture_ext(&ext) { return Err("Chọn một file video trên máy để xem thử.".into()); }
+    app.asset_protocol_scope().allow_file(&path).map_err(|e| e.to_string())
+}
+
 // Cho cửa sổ app phát video kết quả ngay trong giao diện (giao thức asset chỉ mở đúng file này).
 #[tauri::command]
 fn allow_result(app: tauri::AppHandle, path: String) -> Result<(), String> {
@@ -1870,6 +1992,7 @@ async fn revise_lines(
     app: tauri::AppHandle,
     path: String,
     edits: Vec<pipeline::LinePatch>,
+    structure: Option<editing::Structure>,
 ) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let control = app.state::<DubControl>();
@@ -1907,7 +2030,10 @@ async fn revise_lines(
                     ..DubSnapshot::default()
                 };
             });
-            pipeline::revise(&app, &file, &edits, &control.cancel)
+            if let Some(action) = &structure {
+                if !edits.is_empty() { return Err("Xuất lời/mốc đang sửa trước khi tách/gộp câu.".into()); }
+                pipeline::restructure(&app, &file, action, &control.cancel)
+            } else { pipeline::revise(&app, &file, &edits, &control.cancel) }
         }));
         control.running.store(false, Ordering::SeqCst);
         let outcome = match result {
@@ -1988,6 +2114,17 @@ fn dub_lines(path: String) -> Result<Vec<fit_report::ScriptLine>, String> {
     }
     let lines = pipeline::script_for(&path)?;
     Ok(fit_report::annotate(&path, lines))
+}
+
+#[tauri::command]
+async fn timeline_data(app: tauri::AppHandle, path: String, waveform: Option<bool>) -> Result<timing::TimelineData, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let control = app.state::<DubControl>();
+        if control.running.load(Ordering::SeqCst) || control.captioning.load(Ordering::SeqCst) {
+            return Err("Chờ việc đang chạy xong rồi chỉnh mốc.".into());
+        }
+        timing::timeline_data(&result_path(&path)?, waveform.unwrap_or(true))
+    }).await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -2074,12 +2211,49 @@ async fn burn_captions(app: tauri::AppHandle, path: String) -> Result<String, St
     .unwrap_or_else(|_| Err("Không ghi được chữ vào video.".into()))
 }
 
+#[tauri::command]
+fn open_tools_folder(app:tauri::AppHandle)->Result<(),String>{
+    let root=runtime_paths::data_root();std::fs::create_dir_all(&root).map_err(|e|e.to_string())?;
+    app.opener().open_path(root.to_string_lossy().into_owned(),None::<&str>).map_err(|e|e.to_string())
+}
+
+#[tauri::command]
+async fn render_sample(app:tauri::AppHandle,video:String,output_dir:String,target:String,start:f64,seconds:f64,text_only:bool,burn:bool,voice:Option<String>,skip_translate:Option<bool>,use_terms:Option<bool>,render:render::RenderSettings)->Result<String,String>{
+    tauri::async_runtime::spawn_blocking(move||{
+        let control=app.state::<DubControl>();
+        if control.running.load(Ordering::SeqCst)||control.captioning.swap(true,Ordering::SeqCst){return Err("Đang xử lý một video khác.".into());}
+        struct Guard<'a>(&'a AtomicBool);impl Drop for Guard<'_>{fn drop(&mut self){self.0.store(false,Ordering::SeqCst);}}
+        let _guard=Guard(&control.captioning);
+        if control.running.load(Ordering::SeqCst){return Err("Đang lồng một video.".into());}
+        control.cancel.store(false,Ordering::SeqCst);
+        let mut job=job::Job::open(Path::new(&video),Path::new(&output_dir))?;
+        job.target=pipeline::clean_target(&target).0.into();
+        let settings:pipeline::RunSettings=job::read_json(&job.settings_path()).map_err(|_|"Chạy video trước để chuẩn bị lời và tiếng.".to_string())?;
+        if settings.target!=job.target || settings.text_only!=text_only{return Err("Ngôn ngữ hoặc loại kết quả đã đổi. Chạy lại trước khi xem thử.".into());}
+        if (!text_only && voice.as_ref().is_some_and(|v|*v!=settings.voice)) || skip_translate.is_some_and(|v|v!=settings.skip_translate) || use_terms.is_some_and(|v|v!=settings.use_terms) {
+            return Err("Giọng hoặc lựa chọn dịch đã đổi. Chạy lại trước khi xem thử bản xuất.".into());
+        }
+        let path=pipeline::export_sample(&job,start,seconds,text_only,burn,render,&control.cancel)?;
+        app.asset_protocol_scope().allow_file(&path).map_err(|e|e.to_string())?;
+        Ok(path)
+    }).await.map_err(|e|e.to_string())?
+}
+
+#[tauri::command]
+fn read_production(path:String)->Result<serde_json::Value,String>{
+    let path=result_path(&path)?;
+    let root=if path.is_dir(){path.clone()}else{path.parent().ok_or("Không thấy folder việc.")?.to_path_buf()};
+    let job=job::Job::reopen(&root)?;
+    let saved:pipeline::RunSettings=job::read_json(&job.settings_path())?;
+    Ok(serde_json::json!({"video":job.video,"outputDir":root.parent().ok_or("Không thấy folder kết quả.")?,"target":saved.target,"voice":saved.voice,"useTerms":saved.use_terms,"skipTranslate":saved.skip_translate,"textOnly":saved.text_only,"audioOnly":path.extension().is_some_and(|e|e=="m4a"),"burnCaptions":path.file_name().is_some_and(|n|n.to_string_lossy().ends_with(".chu.mp4")),"render":render::RenderSettings::read(&root)?}))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .setup(|_app| Ok(()))
+        .setup(|app| {runtime_paths::initialize(app.handle());Ok(())})
         .manage(DubControl {
             cancel: AtomicBool::new(false),
             running: AtomicBool::new(false),
@@ -2113,12 +2287,21 @@ pub fn run() {
             burn_captions,
             dub_status,
             allow_result,
+            allow_video_preview,
+            render_sample,
+            open_tools_folder,
+            read_production,
+            media_assets::import_logo,
+            media_assets::allow_logo_preview,
             open_result,
             join_listen,
             save_dub_audio,
             save_dub_video,
             list_dubs,
             list_kept,
+            version_details,
+            select_version,
+            version_config,
             draft_brief,
             delete_kept_version,
             finished_result,
@@ -2127,6 +2310,7 @@ pub fn run() {
             name_retake_count,
             retake_saved_names,
             revise_lines,
+            timeline_data,
             default_output_dir,
             get_prefs,
             save_prefs,
@@ -2158,6 +2342,56 @@ pub fn run() {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn queued_service_and_model_resolve_without_changing_the_active_choice() {
+        let saved = normalize_choice("gemini", "test-queue-key")
+            .unwrap()
+            .stashed();
+        let active = saved.switched("local").unwrap();
+        let config = TranslationRun {
+            provider: "gemini".into(),
+            model: "gemini-2.5-flash".into(),
+            use_terms: true,
+        };
+        let choice = config.resolve(active.clone()).unwrap();
+        assert_eq!(choice.provider, "gemini");
+        assert_eq!(choice.api_key, "test-queue-key");
+        assert_eq!(choice.model, "gemini-2.5-flash");
+        assert_eq!(active.provider, "local");
+        assert!(active.api_key.is_empty());
+        assert!(config.resolve(TranslationChoice::default()).is_err());
+        let local = TranslationRun {
+            provider: "deepseek-local".into(),
+            model: "deepseek-expert".into(),
+            use_terms: false,
+        };
+        let resolved = local.resolve(active.clone()).unwrap();
+        assert!(resolved.api_key.is_empty());
+        assert_eq!(resolved.model, "deepseek-expert");
+        let bad = TranslationRun {
+            provider: "unknown".into(),
+            model: String::new(),
+            use_terms: false,
+        };
+        assert!(bad.resolve(active).is_err());
+    }
+
+    #[test]
+    fn name_wait_time_is_accumulated_once_and_survives_snapshot_reload() {
+        let mut snap = DubSnapshot::default();
+        snap.pause.since_ms = Some(1000);
+        let json = serde_json::to_value(&snap).unwrap();
+        assert_eq!(json["pause"]["sinceMs"], 1000);
+        snap.pause.resume(61000);
+        assert_eq!(snap.pause.paused_ms, 60000);
+        snap.pause.resume(62000);
+        assert_eq!(snap.pause.paused_ms, 60000);
+        snap.pause.since_ms = Some(63000);
+        snap.pause.resume(65000);
+        assert_eq!(snap.pause.paused_ms, 62000);
+        assert!(snap.pause.since_ms.is_none());
+    }
 
     #[test]
     fn listen_cache_never_reuses_another_language_or_an_unlabelled_legacy_part() {

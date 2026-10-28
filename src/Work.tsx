@@ -1,3 +1,9 @@
+import { invoke } from "@tauri-apps/api/core";
+import { useRef } from "react";
+import type { RenderSettings } from "./work/renderSettings";
+import { QueuePanel } from "./work/QueuePanel";
+import { ProductionOptions } from "./work/ProductionOptions";
+import { StyleEditor } from "./work/StyleEditor";
 import ListenPart from "./ListenPart";
 import { SetupChip } from "./SetupChip";
 import { lockNote, type SetupSummary } from "./setupStatus";
@@ -5,6 +11,7 @@ import WatchLive from "./WatchLive";
 import { AgainPane } from "./work/againPane";
 import { Composer } from "./work/composer";
 import { useWorkEffects } from "./work/effects";
+import { watchDataKey, watchMediaKey } from "./work/watchLoad";
 import { fileName, isCaptioned, overallEstimate, plainVideo, sameFile } from "./work/format";
 import { jobActions } from "./work/job";
 import { Library } from "./work/library";
@@ -40,11 +47,28 @@ export default function Work({
   const s = useWorkState();
   const job = jobActions(s);
   const play = playbackActions(s);
+  const latest = useRef({ result: s.result, busy: false });
+  latest.current = { result: s.result, busy: s.running || s.captioning || s.joining };
+  async function editExport(versionPath?: string){
+    if (latest.current.busy) return;
+    const source = s.result;
+    s.setOpenNote("");
+    try{
+      const cfg=await invoke<{video:string;outputDir:string;target:string;voice:string;useTerms:boolean;skipTranslate:boolean;textOnly:boolean;audioOnly:boolean;burnCaptions:boolean;render:RenderSettings}>(versionPath ? "version_config" : "read_production",versionPath ? {result:source,path:versionPath} : {path:source});
+      if (latest.current.busy || latest.current.result !== source) return;
+      await invoke("save_prefs",{useTerms:cfg.useTerms,skipTranslate:cfg.skipTranslate,burnCaptions:cfg.burnCaptions});
+      if(s.target!==cfg.target)s.pendingVoice.current={lang:cfg.target,name:cfg.voice};
+      s.setTarget(cfg.target);s.setVoice(cfg.voice);s.setFolder(cfg.outputDir);s.setMode("file");s.setComposeVideo(cfg.video);
+      s.setUseTerms(cfg.useTerms);s.setSkipTranslate(cfg.skipTranslate);s.setTextOnly(cfg.textOnly);s.setAudioOnly(cfg.audioOnly);s.setBurnCaptions(cfg.burnCaptions);
+      job.chooseRender(cfg.render);s.setView("new");onChanged();
+    }catch(e){s.setOpenNote(String(e));}
+  }
   const lock = lockNote(setup);
   const shown = s.playingKept || s.listenFile || s.result;
   const busyText = s.running
     ? s.downloading
       ? "Đang tải video"
+      : s.nameReview ? "Đang chờ bạn kiểm tra tên"
       : `Đang lồng ${s.steps.filter((step) => step.state === "done" || step.state === "skipped").length}/${s.steps.length}`
     : "";
   useWorkEffects(s, {
@@ -58,7 +82,7 @@ export default function Work({
     rememberQueue: job.rememberQueue,
   });
 
-  const overall = overallEstimate(s.steps, s.runStartedAt, s.now);
+  const overall = overallEstimate(s.steps, s.runStartedAt, s.now, s.runPause);
   const activeStep = s.steps.find((step) => step.state === "running");
   const liveFraction = s.downloading ? s.download.progress : s.running && overall.fraction > 0 ? overall.fraction : null;
   const liveTitle = s.downloading ? "Đang tải" : s.video ? fileName(s.video) : "Video đang xử lý";
@@ -66,6 +90,7 @@ export default function Work({
     ? s.download.detail || "Đang tải"
     : s.error && !s.running
       ? s.error
+      : s.nameReview ? "Đang chờ bạn kiểm tra tên"
       : activeStep
         ? activeStep.label
         : s.running
@@ -190,6 +215,7 @@ export default function Work({
 
           {!s.nameEdit && !s.againOpen && s.view === "watch" && s.result ? (
             <WatchPane
+              key={watchMediaKey(shown, s.resultEpoch)}
               shown={shown}
               result={s.result}
               playingKept={s.playingKept}
@@ -197,7 +223,9 @@ export default function Work({
               lines={s.lines}
               joining={s.joining}
               joinProgress={s.joinProgress}
-              playable={s.playable}
+              playable={s.playable && s.checkedMedia === watchMediaKey(shown, s.resultEpoch)}
+              loading={s.checkedMedia !== watchMediaKey(shown, s.resultEpoch)
+                || s.loadedWatchData !== watchDataKey(s.result, s.listenFile, s.resultEpoch)}
               resultEpoch={s.resultEpoch}
               mediaRef={s.mediaRef}
               kept={s.kept}
@@ -215,8 +243,8 @@ export default function Work({
               error={s.error}
               picks={s.picks}
               onPicks={s.setPicks}
-              onPlayCurrent={() => s.setPlayingKept("")}
-              onPlayKept={s.setPlayingKept}
+              onPlayCurrent={() => void play.selectVersion("")}
+              onPlayKept={(path) => void play.selectVersion(path)}
               onDeleteKept={(item) => void play.deleteKept(item)}
               onOpen={(path) => void play.openResult(path)}
               onFetchVideo={() => void job.fetchVideo()}
@@ -227,11 +255,14 @@ export default function Work({
               onStop={() => void job.stop()}
               onAddCaptions={() => void play.addCaptions()}
               onAgain={() => void play.openAgain()}
+              onEditExport={() => void editExport()}
+              onApplyVersion={(path) => void editExport(path)}
               onShowResult={(path) => {
                 s.setResult(path);
                 s.setResultTextOnly(false);
               }}
               onRetake={(edits) => void play.retakeLines(edits)}
+              onStructure={(action) => void play.retakeLines([], action)}
             />
           ) : null}
 
@@ -259,6 +290,7 @@ export default function Work({
               onNames={s.setNameRows}
               onSubmit={(keep) => void play.submitNames(keep)}
               onStop={() => void job.stop()}
+              onSkipCurrent={() => void job.skipCurrent()}
               onRunQueue={() => void job.runQueue()}
               onNew={() => s.setView("new")}
             />
@@ -299,6 +331,8 @@ export default function Work({
               note={s.prefsNote}
               onFolder={() => void job.pickFolder()}
               onTerms={(on) => void job.chooseTerms(on)}
+              onBack={() => s.setView("new")}
+              onTools={onSetup}
             />
           ) : null}
 
@@ -323,6 +357,14 @@ export default function Work({
 
           {!s.nameEdit && s.view === "new" ? (
             <Composer
+              queueTools={<QueuePanel queue={s.queue} history={s.queueHistory} policy={s.queuePolicy} presets={s.presets} running={s.running} needsKey={!s.skipTranslate && s.pending!==""}
+                onPolicy={job.chooseQueuePolicy} onMove={job.moveQueued} onDrop={job.dropQueued} onUpdate={job.updateQueued} onBulk={job.bulkPreset} onRetry={r=>void job.retryRecord(r)} onOpen={path=>{s.setResult(path);s.setResultTextOnly(isCaptioned(path));s.setView("watch");}}/>}
+              styleEditor={<StyleEditor production={<ProductionOptions value={s.render} onChange={job.chooseRender} lang={s.target} voice={s.voice}
+                source={s.mode === "file" ? s.composeVideo : ""} folder={s.folder} audioOnly={s.audioOnly} textOnly={s.textOnly} burn={s.burnCaptions}
+                skipTranslate={s.skipTranslate} useTerms={s.useTerms} disabled={s.running || s.captioning || s.presetApplying} onBusy={s.setCaptioning} />} audioOnly={s.audioOnly} value={s.render} onChange={job.chooseRender}
+                source={s.mode === "file" ? s.composeVideo : ""} disabled={s.captioning || s.running || s.presetApplying}
+                captions={!s.audioOnly && (s.textOnly || s.burnCaptions)} presets={s.presets} onSave={job.savePreset}
+                onApply={(p) => void job.applyPreset(p).then(onChanged)} onDelete={job.deletePreset} />}
               mode={s.mode}
               onMode={s.setMode}
               composeVideo={s.composeVideo}
@@ -337,7 +379,7 @@ export default function Work({
               onSkip={(on) => void job.chooseSkip(on).then(onChanged)}
               burnCaptions={s.burnCaptions}
               onBurn={(checked) => void job.chooseBurn(checked)}
-              captioning={s.captioning}
+              captioning={s.captioning || s.presetApplying}
               running={s.running}
               folder={s.folder}
               pending={s.pending}
@@ -370,7 +412,6 @@ export default function Work({
               onVoice={(name) => void play.chooseVoice(name)}
               onPreview={() => void play.previewVoice()}
               queue={s.queue}
-              onDrop={job.dropQueued}
               onRun={() => void job.run()}
               onLive={() => void job.runLive()}
               lock={lock}

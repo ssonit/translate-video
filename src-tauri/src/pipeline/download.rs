@@ -29,11 +29,13 @@ pub(crate) fn video_url(raw: &str) -> Result<String, String> {
     }
     let host = url_host(url).ok_or("Link không đúng.")?;
     if youtube_host(&host) {
-        if raw.trim() == url {
-            Ok(url.to_string())
-        } else {
-            Err("Link YouTube không được có khoảng trắng.".into())
+        if raw.trim() != url {
+            return Err("Link YouTube không được có khoảng trắng hoặc chữ đi kèm.".into());
         }
+        if !youtube_video(url, &host) {
+            return Err("Chỉ nhận một video YouTube. Dán link watch, youtu.be, shorts, live hoặc embed của video; không nhận playlist hay kênh.".into());
+        }
+        Ok(url.to_string())
     } else if douyin_video(url, &host) || tiktok_video(url, &host) {
         Ok(url.to_string())
     } else {
@@ -64,6 +66,22 @@ fn youtube_host(host: &str) -> bool {
         host,
         "youtube.com" | "www.youtube.com" | "m.youtube.com" | "youtu.be"
     )
+}
+
+fn youtube_video(url: &str, host: &str) -> bool {
+    let path = url_path(url).trim_end_matches('/');
+    let shape = if host == "youtu.be" {
+        !path.is_empty() && !path.contains('/')
+    } else if path == "watch" {
+        query_value(url, "v").is_some()
+    } else {
+        let mut parts = path.split('/');
+        matches!(parts.next(), Some("shorts" | "live" | "embed"))
+            && parts.next().is_some_and(|id| !id.is_empty())
+            && parts.next().is_none()
+            && query_value(url, "v").is_none()
+    };
+    shape && video_id(url).is_some()
 }
 
 fn douyin_host(host: &str) -> bool {
@@ -200,9 +218,7 @@ fn download_douyin(
 ) -> Result<String, String> {
     let python = crate::program_path("python")
         .ok_or("Chưa thấy Python trong PATH. Tải Douyin cần Python và Microsoft Edge.")?;
-    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("douyin")
-        .join("fetch.py");
+    let script = crate::runtime_paths::resource("douyin/fetch.py");
     if !script.is_file() {
         return Err("Thiếu phần tải Douyin trong app.".into());
     }
@@ -1454,9 +1470,9 @@ mod tests {
     #[test]
     fn video_link_is_checked_before_it_reaches_ytdlp() {
         for ok in [
-            "https://www.youtube.com/watch?v=abc123",
-            " https://youtu.be/abc123?t=5 ",
-            "https://m.youtube.com/shorts/abc123",
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+            " https://youtu.be/dQw4w9WgXcQ?t=5 ",
+            "https://m.youtube.com/shorts/dQw4w9WgXcQ",
             "https://www.douyin.com/video/6961737553342991651",
             "https://v.douyin.com/iRNBho6/",
             "https://www.douyin.com/jingxuan?modal_id=6961737553342991651",
@@ -1469,8 +1485,8 @@ mod tests {
             assert!(video_url(ok).is_ok(), "{ok}");
         }
         assert_eq!(
-            video_url(" https://youtu.be/abc ").unwrap(),
-            "https://youtu.be/abc"
+            video_url(" https://youtu.be/dQw4w9WgXcQ ").unwrap(),
+            "https://youtu.be/dQw4w9WgXcQ"
         );
         let share = "7.43 复制打开抖音，看看【作品】标题 https://v.douyin.com/iRNBho6/ 复制此链接";
         assert_eq!(video_url(share).unwrap(), "https://v.douyin.com/iRNBho6/");
@@ -1507,6 +1523,30 @@ mod tests {
             "https://vm.tiktok.com/",
             "https://tiktok.com.evil.com/@ten/video/7234567890123456789",
             "https://www.bilibili.com/video/BV1xx411c7mD",
+        ] {
+            assert!(video_url(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn youtube_accepts_only_one_video_even_when_a_playlist_is_in_the_query() {
+        for good in [
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=PL123&index=2",
+            "https://youtu.be/dQw4w9WgXcQ?list=PL123",
+            "https://www.youtube.com/live/dQw4w9WgXcQ",
+            "https://www.youtube.com/embed/dQw4w9WgXcQ",
+        ] {
+            assert!(video_url(good).is_ok(), "{good}");
+        }
+        for bad in [
+            "https://www.youtube.com/playlist?list=PL123",
+            "https://www.youtube.com/playlist?list=PL123&v=dQw4w9WgXcQ",
+            "https://www.youtube.com/@channel",
+            "https://www.youtube.com/watch?v=short",
+            "https://www.youtube.com/shorts/dQw4w9WgXcQ/extra",
+            "https://youtu.be/dQw4w9WgXcQ/extra",
+            "https://www.youtube.com/",
+            "Xem https://youtu.be/dQw4w9WgXcQ",
         ] {
             assert!(video_url(bad).is_err(), "{bad}");
         }

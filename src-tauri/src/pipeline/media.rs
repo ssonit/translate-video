@@ -351,11 +351,11 @@ pub(crate) fn choose_asr(
 }
 
 pub(crate) fn bundled_asr_script() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../scripts/faster_whisper.py")
+    crate::runtime_paths::resource("scripts/faster_whisper.py")
 }
 
 fn project_whisper_dir() -> Option<PathBuf> {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../whisper");
+    let path = crate::runtime_paths::tool_dir("whisper");
     path.is_dir().then_some(path)
 }
 

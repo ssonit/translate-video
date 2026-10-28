@@ -1,9 +1,13 @@
+import { cleanRender } from "./work/renderSettings.ts";
 // Hàng đợi chỉ xếp việc. Một video chạy xong mới tới video sau.
 // Danh sách chờ ghi vào máy, thoát app rồi mở lại vẫn còn.
 
 import { shareLink } from "./shareLink.ts";
 
 const QUEUE_STORAGE_KEY = "dub-queue";
+
+// No API keys in localStorage. Rust resolves the selected service's saved key.
+export type TranslationRun = { provider: string; model: string; useTerms: boolean };
 
 export type QueueJob = {
   id: string;
@@ -17,6 +21,8 @@ export type QueueJob = {
   skipTranslate: boolean;
   burnCaptions: boolean;
   textOnly: boolean;
+  render?: import("./work/renderSettings").RenderSettings;
+  translation?: TranslationRun;
 };
 
 // Đoạn chia sẻ Douyin hoặc TikTok thì lấy link trong đó. Chữ khác giữ nguyên.
@@ -96,7 +102,21 @@ function isQueueJob(value: unknown): value is QueueJob {
 function asQueueJob(value: unknown): QueueJob | null {
   if (!isQueueJob(value)) return null;
   const item = value as QueueJob & { textOnly?: unknown };
-  return { ...item, textOnly: item.textOnly === true };
+  const config = item.translation;
+  const translation = config && typeof config.provider === "string" &&
+    ["local", "gemini", "openai", "claude", "deepseek", "deepseek-local"].includes(config.provider) &&
+    typeof config.model === "string" && typeof config.useTerms === "boolean"
+      ? { provider: config.provider, model: config.model, useTerms: config.useTerms }
+      : undefined;
+  // Whitelist fields, so a hand-edited/older queue cannot persist a stray API key.
+  return {
+    id: item.id, label: item.label, mode: item.mode, source: item.source,
+    folder: item.folder, target: item.target, voice: item.voice,
+    audioOnly: item.audioOnly, skipTranslate: item.skipTranslate,
+    burnCaptions: item.burnCaptions, textOnly: item.textOnly === true,
+    ...(translation ? { translation } : {}),
+    ...(item.render ? { render: cleanRender(item.render) } : {}),
+  };
 }
 
 export function parseSavedQueue(raw: string | null): SavedQueue {

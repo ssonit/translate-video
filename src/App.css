@@ -186,6 +186,85 @@ select:disabled {
   }
 }
 
+/* Switch by the actual video metadata and available pane width, not its website. */
+@container video-pane (min-width: 620px) {
+  .watch.has-script:has(video[data-shape="portrait"]) {
+    display: grid;
+    grid-template-columns: minmax(210px, 0.9fr) minmax(280px, 1.1fr);
+    grid-template-rows: auto auto minmax(0, 1fr);
+    column-gap: 18px;
+    row-gap: 8px;
+  }
+
+  .watch.has-script:has(video[data-shape="portrait"]) > .result-head,
+  .watch.has-script:has(video[data-shape="portrait"]) > .versions {
+    grid-column: 1 / -1;
+  }
+
+  .watch.has-script:has(video[data-shape="portrait"]) > .watch-media {
+    grid-column: 1;
+    grid-row: 3;
+    min-height: 0;
+    margin: 0;
+    padding-top: 0;
+  }
+
+  .watch.has-script:has(video[data-shape="portrait"]) > .script-wrap {
+    grid-column: 2;
+    grid-row: 3;
+    height: 100%;
+    min-height: 0;
+    max-height: none;
+    margin: 0;
+  }
+
+  .live:has(video[data-shape="portrait"]) {
+    grid-template-columns: minmax(210px, 0.9fr) minmax(280px, 1.1fr);
+    grid-template-rows: auto minmax(0, 1fr) auto auto;
+    column-gap: 18px;
+  }
+
+  .live:has(video[data-shape="portrait"]) > .live-head { grid-column: 1 / -1; }
+  .live:has(video[data-shape="portrait"]) > .live-stage {
+    grid-column: 1;
+    grid-row: 2;
+    min-height: 0;
+    align-items: center;
+  }
+  .live:has(video[data-shape="portrait"]) .live-frame {
+    height: 100%;
+    width: auto;
+    aspect-ratio: var(--video-ratio);
+    display: flex;
+    justify-content: center;
+    container-type: size;
+  }
+  .live:has(video[data-shape="portrait"]) .live-frame > .result-video {
+    max-height: 100cqh;
+    max-width: 100%;
+    height: 100%;
+  }
+  .live:has(video[data-shape="portrait"]) > .live-lines {
+    grid-column: 2;
+    grid-row: 2;
+  }
+  .live:has(video[data-shape="portrait"]) > .preview-hint {
+    grid-column: 1 / -1;
+    grid-row: 3;
+  }
+  .live:has(video[data-shape="portrait"]) > .live-actions {
+    grid-column: 1 / -1;
+    grid-row: 4;
+  }
+}
+
+/* Captions stay readable on a narrow portrait player; the full sentence is in the list. */
+.live-frame:has(video[data-shape="portrait"]) .live-caption {
+  font-size: clamp(0.78rem, 3.8cqi, 1.1rem);
+  bottom: max(48px, 10%);
+  overflow-wrap: anywhere;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .setup-chip.is-checking::before {
     animation: none;
@@ -1115,7 +1194,7 @@ select:disabled {
 
 .stage-body {
   display: grid;
-  grid-template-columns: minmax(210px, 250px) minmax(0, 1fr);
+  grid-template-columns: minmax(270px, 320px) minmax(0, 1fr);
   gap: 20px;
   min-height: 0;
 }
@@ -1128,6 +1207,10 @@ select:disabled {
   border: 1px solid var(--line);
   border-radius: 22px;
   overflow: hidden;
+}
+
+.pane {
+  container: video-pane / inline-size;
 }
 
 .library {
@@ -1267,6 +1350,7 @@ select:disabled {
 }
 
 .library-find {
+  position: relative;
   display: block;
   flex: 0 0 auto;
   padding: 4px 4px 8px;
@@ -1871,7 +1955,7 @@ audio.draft-media {
 .live {
   position: relative;
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
   height: 100%;
   min-height: 0;
   padding: 14px 16px 12px;
@@ -2115,6 +2199,7 @@ audio.draft-media {
 }
 
 .watch {
+  position: relative;
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -2122,29 +2207,83 @@ audio.draft-media {
   padding: 12px 14px 10px;
 }
 
+/* Metadata and local script files resolve independently. Mask their intermediate
+   layouts so a newly selected result is revealed only in its final arrangement. */
+.watch.is-loading > :not(.watch-loading) {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.watch-loading {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  background: var(--surface);
+  color: var(--muted);
+}
+
+.watch-loading p { margin: 0; }
+.watch-loading-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: chip-pulse 1.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .watch-loading-dot { animation: none; }
+}
+
 .watch > .result-head,
-.watch > .versions,
-.watch > .result-bar,
-.watch > .library-empty {
+.watch > .versions {
   flex: 0 0 auto;
 }
 
-/* Ô video lấy phần cao còn lại. Kích thước gốc của video không được kéo giãn hay bóp ô này. */
-.watch > .player-slot {
-  position: relative;
+.watch > .watch-media {
+  display: flex;
+  flex-direction: column;
   flex: 1 1 0;
   min-width: 0;
-  min-height: 16rem;
-  margin-top: 8px;
+  min-height: 0;
+  gap: 0;
+  padding-top: 8px;
 }
 
-/* Có phụ đề thì khung hình nhường khoảng một phần ba chỗ còn lại cho danh sách câu. */
-.watch.has-script > .player-slot {
-  flex: 1.7 1 0;
-  min-height: 12rem;
+.watch.has-script > .watch-media { flex: 3 1 0; }
+.watch.is-audio > .watch-media { flex: 0 0 auto; }
+.watch-media > .result-bar,
+.watch-media > .result-audio,
+.watch-media > .library-empty { flex: 0 0 auto; }
+
+/* The picture and its actions form one column; spare height stays below them. */
+.watch-media > .player-slot {
+  position: relative;
+  container-type: size;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  flex: 0 1 auto;
+  width: 100%;
+  aspect-ratio: var(--video-aspect, 1.777777778);
+  min-width: 0;
+  min-height: 0;
 }
 
-.watch > .player-slot > .result-video {
+.watch-media > .player-slot > .video-surface {
+  --video-aspect: 1.777777778;
+  position: relative;
+  flex: none;
+  container-type: size;
+  width: min(100cqw, calc(100cqh * var(--video-aspect)));
+  height: min(100cqh, calc(100cqw / var(--video-aspect)));
+}
+
+.watch-media > .player-slot > .video-surface > .result-video {
   position: absolute;
   inset: 0;
   width: 100%;
@@ -2152,6 +2291,46 @@ audio.draft-media {
   max-height: none;
   margin: 0;
   object-fit: contain;
+}
+
+.watch-media > .player-slot > .video-surface > .result-video:fullscreen {
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+}
+
+/* Wide landscape players need room beside the script instead of a shallow full-width strip. */
+@container video-pane (min-width: 1000px) {
+  .watch.has-script:has(video[data-shape="landscape"]) {
+    display: grid;
+    grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr);
+    grid-template-rows: auto auto minmax(0, 1fr);
+    column-gap: 18px;
+    row-gap: 8px;
+  }
+
+  .watch.has-script:has(video[data-shape="landscape"]) > .result-head,
+  .watch.has-script:has(video[data-shape="landscape"]) > .versions {
+    grid-column: 1 / -1;
+  }
+
+  .watch.has-script:has(video[data-shape="landscape"]) > .watch-media {
+    grid-column: 1;
+    grid-row: 3;
+    min-height: 0;
+    margin: 0;
+    padding-top: 0;
+  }
+
+  .watch.has-script:has(video[data-shape="landscape"]) > .script-wrap {
+    grid-column: 2;
+    grid-row: 3;
+    height: 100%;
+    min-height: 0;
+    max-height: none;
+    margin: 0;
+  }
+
 }
 
 .watch > .script-wrap {
@@ -2165,6 +2344,10 @@ audio.draft-media {
   flex: 1 1 0;
   min-height: 8.5rem;
   max-height: none;
+}
+
+.watch.has-script > .script-wrap:has(.script-review) {
+  min-height: min(15rem, 40%);
 }
 
 .watch.is-audio > .result-audio {
@@ -2254,6 +2437,10 @@ audio.draft-media {
   margin-top: 0;
 }
 
+.watch .script-review + .script {
+  margin-top: 12px;
+}
+
 .watch .result-audio {
   margin-top: 8px;
 }
@@ -2290,6 +2477,7 @@ audio.draft-media {
   flex-shrink: 0;
   padding: 12px 14px;
   background: var(--warn-bg);
+  border: 1px solid rgba(231, 184, 102, 0.2);
   border-radius: 12px;
 }
 
@@ -2362,21 +2550,30 @@ audio.draft-media {
 
 .script li.is-current .script-play,
 .script li.is-current .script-play:hover {
+  background: transparent;
+  box-shadow: none;
+}
+
+.script li.is-current {
   background: rgba(231, 161, 90, 0.16);
   box-shadow: inset 3px 0 0 var(--accent);
+  border-radius: 10px;
 }
 
 .script-fix {
-  margin: 8px 8px 0 0;
-  padding: 0;
-  border: 0;
-  background: transparent;
+  margin: 8px 8px 8px 4px;
+  padding: 4px 8px;
+  min-height: 30px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--inset);
   color: var(--accent);
   font-size: 0.82rem;
 }
 
 .script-fix:hover:not(:disabled) {
-  text-decoration: underline;
+  border-color: var(--accent);
+  background: var(--raised);
 }
 
 .script-fix:disabled {
@@ -2610,6 +2807,22 @@ button:not(:disabled):active {
 .library-find input {
   min-height: 40px;
   border-radius: 12px;
+  padding-left: 2.5rem;
+}
+
+.library-find-icon {
+  position: absolute;
+  left: 18px;
+  top: 20px;
+  width: 18px;
+  height: 18px;
+  transform: translateY(-50%);
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  color: var(--muted);
+  pointer-events: none;
 }
 
 .lib-item.is-on {
@@ -2646,9 +2859,10 @@ button:not(:disabled):active {
   font-weight: 600;
   line-height: 1.5;
   display: -webkit-box;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
+  overflow-wrap: anywhere;
 }
 
 .library .row em {
@@ -2861,6 +3075,74 @@ button:not(:disabled):active {
   font-size: 0.8rem;
 }
 
+.output-choices {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.output-choices legend {
+  margin-bottom: 10px;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.output-choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 12px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.output-choice:has(input:checked) {
+  border-color: var(--accent);
+  background: rgba(231, 161, 90, 0.08);
+}
+
+.output-choice:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 3px; }
+.output-choice:has(input:disabled) { opacity: 0.5; cursor: not-allowed; }
+.output-choice input { margin: 4px 0 0; accent-color: var(--accent); }
+.output-choice strong { display: block; font-size: 0.84rem; font-weight: 600; }
+.output-choice small { display: block; margin-top: 3px; color: var(--muted); font-size: 0.75rem; }
+.output-summary { margin: 16px 0 0; font-size: 0.84rem; }
+.output-summary > span { display: block; overflow-wrap: anywhere; margin-top: 4px; color: var(--muted); font-size: 0.78rem; }
+
+.workflow-phases {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  list-style: none;
+  padding: 18px 0;
+  margin: 0;
+}
+
+.workflow-phases li { min-width: 0; padding: 10px; border-bottom: 2px solid var(--line); color: var(--muted); }
+.workflow-phases li > span { display: block; font-size: 0.8rem; }
+.workflow-phases strong { display: block; font-size: 0.84rem; font-weight: 500; }
+.workflow-phases small { display: block; font-size: 0.75rem; }
+.workflow-phases li[data-state="running"], .workflow-phases li[data-state="waiting"] { border-color: var(--accent); color: var(--accent); }
+.workflow-phases li[data-state="done"] { border-color: var(--ok); }
+.workflow-phases li[data-state="error"] { border-color: var(--bad); color: var(--bad); }
+.progress-details > summary { padding: 12px 0; cursor: pointer; color: var(--muted); }
+.phase-current { margin: 0 0 12px; color: var(--muted); font-size: 0.84rem; }
+.phase-current strong { color: var(--text); font-weight: 500; }
+.wait-row > span { flex: 1; }
+.wait-row .link:hover { background: var(--idle-bg); color: var(--text); }
+
+@media (max-width: 800px) {
+  .output-choices { grid-template-columns: 1fr; }
+  .workflow-phases { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; }
+  .wait-row { flex-wrap: wrap; }
+  .wait-row > span { flex-basis: 100%; }
+}
+
 .compose-foot .check,
 .compose-foot .preview-action {
   min-width: 100px;
@@ -2876,7 +3158,7 @@ button:not(:disabled):active {
 
 @media (max-width: 1000px) and (min-width: 701px) {
   .stage-body {
-    grid-template-columns: 210px minmax(0, 1fr);
+    grid-template-columns: 260px minmax(0, 1fr);
     grid-template-rows: minmax(0, 1fr);
     gap: 14px;
   }

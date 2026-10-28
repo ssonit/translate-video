@@ -9,6 +9,7 @@ import { firstGap, markFor, summarize, type ToolStatus } from "./setupStatus";
 import Work from "./Work";
 import { useTtsBridge } from "./tts/bridge";
 import "./App.css";
+import "./preferences.css";
 
 type Provider = "local" | CloudChoice["id"];
 
@@ -55,6 +56,7 @@ export default function App() {
   const [modelListNote, setModelListNote] = useState("");
   const [skipTranslate, setSkipTranslate] = useState(false);
   const [prefsEpoch, setPrefsEpoch] = useState(0);
+  const guideRef = useRef<HTMLElement>(null);
   // Chỉ hỏi server khi hàng Bật/Tắt đang hiện. Ô Dịch bằng bên màn lồng tiếng tự hỏi riêng.
   const deepseek = useDeepseekServer(provider === "deepseek-local" && screen === "setup", tools);
 
@@ -267,23 +269,25 @@ export default function App() {
     <>
     {work}
     {screen === "work" ? null : (
-    <main className="desk">
+    <main className="desk setup-desk">
       <header className="mast">
-        <p className="kicker">Trước khi lồng tiếng</p>
+        <p className="kicker">Không gian làm việc / Đồ nghề</p>
         <div className="mast-row">
           <h1>Đủ đồ nghề chưa</h1>
           <div className="mast-actions">
-            <button type="button" className="link" onClick={() => setScreen("work")}>
-              {busy ? `${busy}, xem tiến độ` : "Lồng tiếng"}
+            <button type="button" className="check" onClick={() => setScreen("work")}>
+              {busy ? `${busy}, xem tiến độ` : "Lồng tiếng →"}
             </button>
-            <button type="button" className="check" onClick={() => void check()} disabled={checking}>
+            <button type="button" className="link" onClick={() => void invoke("open_tools_folder").catch(e=>setError(String(e)))}>Mở thư mục đồ nghề</button>
+            <button type="button" className="link" onClick={() => void check()} disabled={checking}>
               {checking ? "Đang kiểm tra" : "Kiểm tra lại"}
             </button>
           </div>
         </div>
         <p className="lead">
-          Máy tự đối chiếu các công cụ. Mục nào thiếu, bấm vào để xem cách tải. Bạn tự tải file về máy.
+          Mọi thứ cần cho một video mới. Chọn một công cụ để xem trạng thái và cách chuẩn bị.
         </p>
+        <div className="setup-overview" role="status">
         <p className="count">
           {required.length === 0
             ? checking
@@ -291,10 +295,15 @@ export default function App() {
               : "Chưa có kết quả"
             : `${readyCount}/${required.length} đã có`}
         </p>
+        <p>{checking ? "Đang đối chiếu công cụ trên máy…" : setup.kind === "ready" ? "Sẵn sàng cho lần lồng tiếng tiếp theo." : setup.kind === "gap" ? "Chuẩn bị các mục còn thiếu bên dưới để bắt đầu." : "Bấm Kiểm tra lại để đọc trạng thái trên máy."}</p>
+        {required.length > 0 ? <progress aria-label="Công cụ bắt buộc đã sẵn sàng" max={required.length} value={readyCount} /> : null}
+        </div>
         {error ? <p className="error">{error}</p> : null}
       </header>
 
       <section className="sheet">
+        <nav className="setup-navigation" aria-label="Công cụ lồng tiếng">
+        <p className="setup-nav-label">Công cụ trên máy</p>
         <ol className="list">
           {GUIDES.map((item, index) => {
             const mark = markFor(
@@ -307,7 +316,16 @@ export default function App() {
                 <button
                   type="button"
                   className={selected === item.id ? "row is-on" : "row"}
-                  onClick={() => setSelected(item.id)}
+                  onClick={() => {
+                    setSelected(item.id);
+                    if (window.matchMedia("(max-width: 860px)").matches) {
+                      requestAnimationFrame(() => guideRef.current?.scrollIntoView({
+                        block: "start",
+                        behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth",
+                      }));
+                    }
+                  }}
+                  aria-current={selected === item.id ? "true" : undefined}
                 >
                   <span className="index">{String(index + 1).padStart(2, "0")}</span>
                   <span>
@@ -320,9 +338,11 @@ export default function App() {
             );
           })}
         </ol>
+        <p className="setup-local-note">Video và audio ở lại trên máy. Khi dùng dịch vụ dịch qua mạng, chỉ chữ lời thoại được gửi đi.</p>
+        </nav>
 
-        <article className="guide">
-          <p className="kicker">{setupKicker(Boolean(status?.ready), guide.id, provider)}</p>
+        <article className="guide" ref={guideRef}>
+          <p className="kicker">{!status ? checking ? "Đang kiểm tra" : "Chưa có kết quả" : setupKicker(status.ready, guide.id, provider)}</p>
           <h2>{guide.name}</h2>
           <p className="detail">{status?.detail ?? guide.role}</p>
           {guide.id === "model" ? (
@@ -474,6 +494,7 @@ export default function App() {
             >
               <input
                 type="password"
+                aria-label="API key của dịch vụ dịch"
                 value={apiKey}
                 placeholder="API key"
                 autoComplete="off"

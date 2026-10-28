@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
 import "./VideoMenu.css";
 
+const SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
+const number = new Intl.NumberFormat("vi-VN", { maximumFractionDigits: 2 });
+const speedLabel = (rate: number) => `${number.format(rate)}×`;
+
 export default function VideoMenu({ mediaRef, onDownload, saving = false }: {
   mediaRef: RefObject<HTMLMediaElement | null>;
   onDownload?: () => void;
@@ -8,8 +12,22 @@ export default function VideoMenu({ mediaRef, onDownload, saving = false }: {
 }) {
   const [open, setOpen] = useState(false);
   const [error, setError] = useState("");
+  const [page, setPage] = useState<"main" | "speed">("main");
+  const [rate, setRate] = useState(1);
+  const [paused, setPaused] = useState(true);
   const root = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    const media = mediaRef.current;
+    if (!media) return;
+    const sync = () => { setRate(media.playbackRate); setPaused(media.paused); };
+    sync();
+    for (const name of ["ratechange", "play", "pause", "ended"]) media.addEventListener(name, sync);
+    return () => {
+      for (const name of ["ratechange", "play", "pause", "ended"]) media.removeEventListener(name, sync);
+    };
+  }, [mediaRef]);
 
   useEffect(() => {
     if (!open) return;
@@ -17,9 +35,22 @@ export default function VideoMenu({ mediaRef, onDownload, saving = false }: {
       if (event.target instanceof Node && !root.current?.contains(event.target)) setOpen(false);
     };
     document.addEventListener("pointerdown", outside, true);
-    root.current?.querySelector<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')?.focus();
+    const target = root.current?.querySelector<HTMLButtonElement>(page === "speed"
+      ? '[role="menuitemradio"][aria-checked="true"]' : '[role="menuitem"]:not(:disabled)')
+      ?? root.current?.querySelector<HTMLButtonElement>('[role="menuitemradio"]');
+    target?.focus();
     return () => document.removeEventListener("pointerdown", outside, true);
-  }, [open]);
+  }, [open, page]);
+
+  function chooseSpeed(value: number) {
+    const media = mediaRef.current;
+    if (!media) return;
+    media.defaultPlaybackRate = value;
+    media.playbackRate = value;
+    setRate(value);
+    setOpen(false);
+    trigger.current?.focus();
+  }
 
   async function pictureInPicture() {
     const video = mediaRef.current;
@@ -42,21 +73,31 @@ export default function VideoMenu({ mediaRef, onDownload, saving = false }: {
   }
 
   return (
-    <div className="video-menu" ref={root}
+    <div className={["video-menu", paused ? "is-paused" : "", open ? "is-open" : ""].filter(Boolean).join(" ")} ref={root}
       onBlur={(event) => {
         if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOpen(false);
       }}
       onKeyDown={(event) => {
+        if (event.key === "ArrowLeft" && open && page === "speed") {
+          event.preventDefault();
+          setPage("main");
+          return;
+        }
         if (event.key === "Escape") {
           event.preventDefault();
           event.stopPropagation();
           setOpen(false);
           trigger.current?.focus();
         }
-        if (event.key === "ArrowDown" || event.key === "ArrowUp" || event.key === "Home" || event.key === "End") {
+        if (event.key === "ArrowDown" || event.key === "ArrowUp" || event.key === "ArrowRight" || event.key === "Home" || event.key === "End") {
           event.preventDefault();
-          if (!open) { setOpen(true); return; }
-          const buttons = Array.from(root.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)') ?? []);
+          if (!open) { setPage("main"); setOpen(true); return; }
+          if (event.key === "ArrowRight" && page === "main") {
+            if (document.activeElement?.getAttribute("aria-haspopup") === "menu") setPage("speed");
+            return;
+          }
+          const buttons = Array.from(root.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled), [role="menuitemradio"]') ?? []);
+          if (buttons.length === 0) return;
           const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
           const next = event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1
             : (index + (event.key === "ArrowUp" ? buttons.length - 1 : 1)) % buttons.length;
@@ -64,11 +105,23 @@ export default function VideoMenu({ mediaRef, onDownload, saving = false }: {
         }
       }}>
       <button type="button" className="video-menu-trigger" ref={trigger} aria-label="Tùy chọn video"
-        aria-haspopup="menu" aria-expanded={open} onClick={() => { setError(""); setOpen(!open); }}>
+        aria-haspopup="menu" aria-expanded={open} onClick={() => { setError(""); setPage("main"); setOpen(!open); }}>
         <span aria-hidden="true">⋮</span>
       </button>
       {open ? (
-        <div className="video-menu-popup" role="menu" aria-label="Tùy chọn video">
+        <div className="video-menu-popup" role="menu" aria-label={page === "speed" ? "Tốc độ phát" : "Tùy chọn video"}>
+          {page === "speed" ? <>
+            <button type="button" className="video-menu-back" onClick={() => setPage("main")} aria-label="Quay lại tùy chọn video">
+              <span aria-hidden="true">‹</span> Tốc độ phát
+            </button>
+            <div className="video-menu-speeds">
+              {SPEEDS.map((value) => <button key={value} type="button" role="menuitemradio" aria-checked={rate === value}
+                onClick={() => chooseSpeed(value)}>{speedLabel(value)}</button>)}
+            </div>
+          </> : <>
+          <button type="button" role="menuitem" aria-haspopup="menu" onClick={() => setPage("speed")}>
+            <span>Tốc độ</span><span className="video-menu-value">{speedLabel(rate)} <span aria-hidden="true">›</span></span>
+          </button>
           <button type="button" role="menuitem" disabled={!onDownload || saving} onClick={() => {
             setOpen(false);
             trigger.current?.focus();
@@ -77,6 +130,7 @@ export default function VideoMenu({ mediaRef, onDownload, saving = false }: {
           <button type="button" role="menuitem" disabled={!document.pictureInPictureEnabled} onClick={() => void pictureInPicture()}>
             Hình trong hình
           </button>
+          </>}
           {error ? <p role="alert">{error}</p> : null}
         </div>
       ) : null}

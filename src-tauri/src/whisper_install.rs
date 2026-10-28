@@ -381,7 +381,7 @@ fn install_model(
 }
 
 fn whisper_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../whisper")
+    crate::runtime_paths::data_root().join("whisper")
 }
 
 fn run(app: &AppHandle, cancel: &AtomicBool) -> Result<String, String> {

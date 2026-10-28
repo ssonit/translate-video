@@ -1,4 +1,4 @@
-import { duration, mark, markText, remainingText, stepFraction, stepRemaining } from "./format";
+import { duration, mark, markText, remainingText, stepFraction, stepRemaining, workflowPhases } from "./format";
 import { NameForm } from "./names";
 import type { NameFix, NamesPending, StepView } from "./types";
 
@@ -25,6 +25,7 @@ export function ProgressPane({
   onNames,
   onSubmit,
   onStop,
+  onSkipCurrent,
   onRunQueue,
   onNew,
 }: {
@@ -50,22 +51,25 @@ export function ProgressPane({
   onNames: (rows: NameFix[]) => void;
   onSubmit: (keep: boolean) => void;
   onStop: () => void;
+  onSkipCurrent: () => void;
   onRunQueue: () => void;
   onNew: () => void;
 }) {
+  const activeStep = steps.find((step) => step.state === "running");
   const ran = [`đã chạy ${duration(elapsed)}`, remainingText(remaining), queueCount > 0 ? `còn ${queueCount} trong hàng` : ""]
     .filter(Boolean)
     .join(" · ");
   return (
     <div className="pane-fill">
+      {running && queueCount>0 ? <button type="button" className="link" onClick={onSkipCurrent}>Bỏ qua video này, chạy video kế</button> : null}
       <div className="overall" aria-live="polite">
         <div className="overall-row">
-          <strong>{liveFraction !== null ? `${Math.round(liveFraction * 100)}%` : liveDetail}</strong>
+          <strong>{nameReview ? "Đang chờ bạn kiểm tra tên" : liveFraction !== null ? `${Math.round(liveFraction * 100)}%` : liveDetail}</strong>
           <span>
             {downloading
               ? download.detail
               : running
-                ? ran
+                ? nameReview ? "Thời gian chờ không tính vào thời gian xử lý" : ran
                 : error
                   ? ""
                   : started
@@ -89,6 +93,16 @@ export function ProgressPane({
           </div>
         )}
       </div>
+      <ol className="workflow-phases" aria-label="Các giai đoạn xử lý">
+        {workflowPhases(steps, nameReview !== null).map((phase, index) => (
+          <li key={phase.id} data-state={phase.state} aria-current={phase.state === "running" || phase.state === "waiting" ? "step" : undefined}>
+            <span>{phase.state === "done" ? "✓" : index + 1}</span>
+            <strong>{phase.label}</strong>
+            <small>{phase.state === "waiting" ? "Chờ bạn" : markText(phase.state)}</small>
+          </li>
+        ))}
+      </ol>
+      {!nameReview && activeStep ? <p className="phase-current" aria-live="polite"><strong>{activeStep.label}</strong>{activeStep.detail ? ` · ${activeStep.detail}` : ""}</p> : null}
       {error ? (
         <p className="error">
           {error}{" "}
@@ -101,7 +115,7 @@ export function ProgressPane({
       ) : null}
       {nameReview ? (
         <NameForm
-          title="Tên"
+          title="Kiểm tra tên trước khi dịch"
           intro="AI điền sẵn tên bị chép sai. Sửa hoặc thêm, rồi dịch tiếp. Phụ đề và giọng đều dùng tên đúng."
           note={nameReview.note}
           error={nameNote}
@@ -117,6 +131,8 @@ export function ProgressPane({
       ) : (
         <>
           <div className="pane-scroll">
+            <details className="progress-details" open={error ? true : undefined}>
+              <summary>Chi tiết {steps.length} bước</summary>
             <ol className="steps">
               {steps.map((step, index) => {
                 const percent = Math.round(stepFraction(step) * 100);
@@ -144,6 +160,7 @@ export function ProgressPane({
                 );
               })}
             </ol>
+            </details>
           </div>
           <footer className="pane-foot">
             {running ? (

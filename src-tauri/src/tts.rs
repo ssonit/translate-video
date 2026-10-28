@@ -262,14 +262,28 @@ pub(crate) async fn preview_voice(
     app: AppHandle,
     lang: String,
     name: String,
+    text: Option<String>,
 ) -> Result<Response, String> {
     let done = tauri::async_runtime::spawn_blocking(move || {
         let code = crate::pipeline::clean_target(&lang).0;
         let dir =
             crate::bundled_voice_dir(code).ok_or("Chưa thấy folder giọng của ngôn ngữ này.")?;
         voice_file(&dir, &name, "model")?;
-        let path = std::env::temp_dir().join("voice-preview.wav");
-        let _ = std::fs::remove_file(&path);
+        let text=text.filter(|s|!s.trim().is_empty()).unwrap_or_else(||preview_text(code).into());
+        if text.len()>3000{return Err("Câu thử giọng quá dài.".into());}
+        let control=app.state::<crate::DubControl>();
+        if control.running.load(Ordering::SeqCst)||control.captioning.swap(true,Ordering::SeqCst){return Err("Đang xử lý một yêu cầu khác.".into());}
+        struct Busy<'a>(&'a AtomicBool);
+        impl Drop for Busy<'_>{fn drop(&mut self){self.0.store(false,Ordering::SeqCst);}}
+        let _busy=Busy(&control.captioning);
+        if control.running.load(Ordering::SeqCst){return Err("Đang lồng một video.".into());}
+        static NEXT:std::sync::atomic::AtomicU64=std::sync::atomic::AtomicU64::new(0);
+        let path=std::env::temp_dir().join(format!("voice-preview-{}-{}.wav",std::process::id(),NEXT.fetch_add(1,Ordering::Relaxed)));
+        let _file=std::fs::OpenOptions::new().write(true).create_new(true).open(&path).map_err(|e|e.to_string())?;
+        struct Temp(std::path::PathBuf);
+        impl Drop for Temp{fn drop(&mut self){let _=std::fs::remove_file(&self.0);}}
+        let _temp=Temp(path.clone());
+        drop(_file);
         let cancel = AtomicBool::new(false);
         let exe = crate::piper::locate();
         let caps = exe.as_ref().and_then(|path| crate::piper::read_caps(path));
@@ -279,7 +293,7 @@ pub(crate) async fn preview_voice(
             let prepared = prepare(
                 &app,
                 code,
-                &[(0usize, preview_text(code).to_string())],
+                &[(0usize, text.clone())],
                 &cancel,
             )?;
             let chunks = prepared
@@ -337,7 +351,7 @@ pub(crate) async fn preview_voice(
                 }
             }
         }
-        let items = vec![(0usize, preview_text(code).to_string(), path.clone())];
+        let items = vec![(0usize, text, path.clone())];
         run(&app, &name, code, &items, false, &cancel, &|_, _| {})?;
         std::fs::read(&path).map_err(|error| error.to_string())
     })

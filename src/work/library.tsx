@@ -62,6 +62,10 @@ export function Library({
     <aside className="library">
       <label className="library-find">
         <span className="library-find-label">Tìm video</span>
+        <svg className="library-find-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <circle cx="10.5" cy="10.5" r="6.5" />
+          <path d="m16 16 4.5 4.5" />
+        </svg>
         <input type="search" value={query} placeholder="Tìm theo tên" onChange={(event) => onQuery(event.target.value)} />
       </label>
       <div className={view === "new" ? "lib-item is-on library-pin" : "lib-item library-pin"}>
@@ -77,7 +81,7 @@ export function Library({
           <div className={liveOn ? "lib-item is-on" : "lib-item"}>
             <button type="button" className="row" onClick={onProgress}>
               <span>
-                <strong>{liveTitle}</strong>
+                <strong title={liveTitle}>{liveTitle}</strong>
                 <em title={liveDetail}>
                   {liveDetail}
                   {liveFraction !== null ? ` · ${Math.round(liveFraction * 100)}%` : ""}
@@ -120,7 +124,7 @@ export function Library({
             <div key={item.path} className={selected ? "lib-item is-on" : "lib-item"}>
               <button type="button" className="row" onClick={openItem}>
                 <span>
-                  <strong>{item.title}</strong>
+                  <strong title={item.title}>{item.title}</strong>
                   <em title={live ? liveDetail : undefined}>
                     {item.done
                       ? [item.audio ? "chỉ audio" : "", item.language ? languageName(item.language) : "", item.captioned ? "có chữ" : "", when(item.modifiedMs)]

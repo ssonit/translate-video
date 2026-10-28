@@ -6,7 +6,8 @@ import { previewStillOpen } from "../watchPlay";
 import type { WatchUpdate } from "../WatchLive";
 import { errorText, isAudio } from "./format";
 import type { Session } from "./state";
-import type { DubStatus, FinishedDub, KeptVersion, NamesPending, Prefs, Progress, ScriptLine } from "./types";
+import { watchDataKey, watchMediaKey } from "./watchLoad";
+import type { DubStatus, FinishedDub, KeptVersion, NamesPending, Prefs, Progress, ScriptLine, RunPause } from "./types";
 
 export function useWorkEffects(
   s: Session,
@@ -55,12 +56,22 @@ export function useWorkEffects(
   // Cho phép cửa sổ phát đúng file kết quả vừa xong, để xem ngay trong app.
   useEffect(() => {
     s.setPlayable(false);
+    s.setCheckedMedia("");
     s.setOpenNote("");
     if (!fx.shown) return;
     let live = true;
+    const key = watchMediaKey(fx.shown, s.resultEpoch);
     invoke("allow_result", { path: fx.shown })
-      .then(() => live && s.setPlayable(true))
-      .catch(() => {});
+      .then(() => {
+        if (!live) return;
+        s.setCheckedMedia(key);
+        s.setPlayable(true);
+      })
+      .catch((caught) => {
+        if (!live) return;
+        s.setCheckedMedia(key);
+        s.setOpenNote(errorText(caught));
+      });
     return () => {
       live = false;
     };
@@ -105,15 +116,22 @@ export function useWorkEffects(
     if (s.view !== "watch" || !s.result) {
       s.setLines([]);
       s.setKept([]);
+      s.setLoadedWatchData("");
       return;
     }
     let live = true;
-    invoke<ScriptLine[]>("dub_lines", { path: s.listenFile || s.result })
-      .then((rows) => live && s.setLines(rows))
-      .catch(() => live && s.setLines([]));
-    invoke<KeptVersion[]>("list_kept", { result: s.result })
-      .then((rows) => live && s.setKept(rows))
-      .catch(() => live && s.setKept([]));
+    const key = watchDataKey(s.result, s.listenFile, s.resultEpoch);
+    // Publish together: the script, warning card and version chips are one view.
+    // Keep already loaded content visible during a background list refresh.
+    void Promise.allSettled([
+      invoke<ScriptLine[]>("dub_lines", { path: s.listenFile || s.result }),
+      invoke<KeptVersion[]>("list_kept", { result: s.result }),
+    ]).then(([lines, kept]) => {
+      if (!live) return;
+      s.setLines(lines.status === "fulfilled" ? lines.value : []);
+      s.setKept(kept.status === "fulfilled" ? kept.value : []);
+      s.setLoadedWatchData(key);
+    });
     return () => {
       live = false;
     };
@@ -137,12 +155,14 @@ export function useWorkEffects(
     s.setVoices([]);
     s.setVoice("");
     s.setVoiceNote("");
-    invoke<string[]>("list_voices", { lang: s.target })
-      .then((names) => current && s.setVoices(names))
-      .catch((caught) => current && s.setVoiceNote(errorText(caught)));
-    invoke<string>("get_voice", { lang: s.target })
-      .then((name) => current && s.setVoice(name))
-      .catch(() => {});
+    Promise.all([invoke<string[]>("list_voices",{lang:s.target}),invoke<string>("get_voice",{lang:s.target}).catch(()=>"")])
+      .then(([names,name])=>{
+        if(!current)return;
+        s.setVoices(names);
+        const wanted=s.pendingVoice.current?.lang===s.target?s.pendingVoice.current.name:"";
+        s.setVoice(wanted&&names.includes(wanted)?wanted:name);
+        if(wanted)s.pendingVoice.current=null;
+      }).catch(caught=>current&&s.setVoiceNote(errorText(caught)));
     return () => {
       current = false;
     };
@@ -217,6 +237,12 @@ export function useWorkEffects(
     return () => {
       void unlisten.then((stop) => stop());
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const unlisten = listen<RunPause>("dub-pause", (event) => s.setRunPause(event.payload));
+    return () => { void unlisten.then((stop) => stop()); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

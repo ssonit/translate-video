@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { pickedEdits } from "./format";
-import { fitWarning, nextFitWarning } from "./fitWarning";
-import type { LinePick, ScriptLine } from "./types";
+import { lineWarning, nextFitWarning } from "./fitWarning";
+import { TimingEditor } from "./TimingEditor";
+import type { LineEdit, LinePick, ScriptLine, StructureEdit } from "./types";
 
 function clock(seconds: number) {
   const total = Math.max(0, Math.floor(seconds));
@@ -69,6 +70,7 @@ function inOpenMenu(node: HTMLMediaElement, event: PointerEvent) {
 }
 
 export function DubScript({
+  resultPath,
   lines,
   videoRef,
   playable,
@@ -78,7 +80,9 @@ export function DubScript({
   captionsOnly,
   busy,
   onRetake,
+  onStructure,
 }: {
+  resultPath: string;
   lines: ScriptLine[];
   videoRef: RefObject<HTMLMediaElement | null>;
   playable: boolean;
@@ -87,7 +91,8 @@ export function DubScript({
   audioOnly: boolean;
   captionsOnly: boolean;
   busy: boolean;
-  onRetake: (edits: { index: number; text: string }[]) => void;
+  onRetake: (edits: LineEdit[]) => void;
+  onStructure: (action: StructureEdit) => void;
 }) {
   const [spoken, setSpoken] = useState(-1);
   const scriptRef = useRef<HTMLOListElement>(null);
@@ -103,7 +108,7 @@ export function DubScript({
   const [draft, setDraft] = useState("");
   const reviewRef = useRef(-1);
   const warnings = useMemo(
-    () => lines.map((line) => captionsOnly || audioOnly ? "" : fitWarning(line)),
+    () => lines.map((line) => lineWarning(line, captionsOnly, audioOnly)),
     [lines, captionsOnly, audioOnly],
   );
   const warningIndexes = warnings.flatMap((warning, index) => warning ? [index] : []);
@@ -180,7 +185,7 @@ export function DubScript({
     const onPointerDown = (event: PointerEvent) => {
       // App menus survive transcript updates; do not treat them as native
       // controls merely because they occupy the same corner of the video.
-      if (event.target instanceof Element && event.target.closest(".video-menu, .playback-speed")) return;
+      if (event.target instanceof Element && event.target.closest(".video-menu")) return;
       const now = performance.now();
       if (now - lastDown < 50) return;
       lastDown = now;
@@ -249,6 +254,7 @@ export function DubScript({
     const node = videoRef.current;
     const line = lines[index];
     if (!node || !line) return;
+    if (!Number.isFinite(line.start) || line.start < 0) return;
     usingControls.current = false;
     window.clearTimeout(controlsTimer.current);
     followRef.current = true;
@@ -275,23 +281,26 @@ export function DubScript({
     const text = draft.trim();
     const same = text === line.translation.trim();
     const next = { ...picks };
-    if (!again && same) delete next[editing];
-    else next[editing] = { text, again: again || !same };
+    const previous = picks[editing];
+    const moved = previous?.start !== undefined && previous?.end !== undefined && (previous.start !== line.start || previous.end !== line.end);
+    if (!again && same && !moved) delete next[editing];
+    else next[editing] = { ...previous, text, again: again || !same, revision: previous?.revision ?? line.revision };
     onPicks(next);
     setEditing(null);
   }
 
   return (
     <div className="script-wrap">
+      {!audioOnly ? <TimingEditor path={resultPath} lines={lines} picks={picks} onPicks={onPicks} videoRef={videoRef} playable={playable} busy={busy} onStructure={onStructure} /> : null}
       {warningIndexes.length > 0 ? (
-        <div className="script-review" role="note" aria-label="Câu cần nghe lại">
-          <p><strong>{warningIndexes.length} câu cần nghe lại</strong><span>Có câu đã tăng tốc hoặc bị cắt. Bấm Sửa để rút gọn rồi đọc lại.</span></p>
+        <div className="script-review" role="note" aria-label="Câu cần kiểm tra">
+          <p><strong>{warningIndexes.length} câu cần kiểm tra</strong><span>{captionsOnly ? "Xem lại đoạn được đánh dấu; bấm Sửa để bổ sung hoặc rút gọn lời. Cảnh báo độ dễ đọc chỉ là gợi ý." : "Xem lại đoạn được đánh dấu; bấm Sửa để bổ sung, rút gọn lời hoặc chọn Đọc lại. Cảnh báo độ dễ đọc chỉ là gợi ý."}</span></p>
           <button type="button" className="link" disabled={!playable || editing !== null} onClick={() => {
             const index = nextFitWarning(warningIndexes, reviewRef.current);
             if (index === undefined) return;
             reviewRef.current = index;
             playLine(index);
-          }}>Đến câu cần nghe</button>
+          }}>Đến câu cần kiểm tra</button>
         </div>
       ) : null}
       <ol className="script" ref={scriptRef} onScroll={onScriptScroll}>
@@ -312,6 +321,7 @@ export function DubScript({
                   <time>{clock(line.start)}</time>
                   {warnings[index] ? <p className="script-fit-warning edit-fit-warning">{warnings[index]}</p> : null}
                   <textarea
+                    autoFocus
                     aria-label={`Sửa câu lúc ${clock(line.start)}`}
                     value={draft}
                     disabled={busy}
@@ -338,9 +348,9 @@ export function DubScript({
                   <button type="button" className="script-play" onClick={() => playLine(index)}>
                     <time>{clock(line.start)}</time>
                     <span>
-                      <strong>{shown}</strong>
+                      <strong>{shown.trim() ? shown : "Chưa có lời cho câu này"}</strong>
                       {warnings[index] ? <em className="script-fit-warning">{warnings[index]}{pending ? " · Chờ tạo lại để kiểm tra" : ""}</em> : null}
-                      {pending ? <em>Sẽ tạo lại</em> : null}
+                      {pending ? <em>{picks[index]?.start !== undefined ? `Mốc nháp ${picks[index].start!.toFixed(3)}–${picks[index].end!.toFixed(3)} giây · Chờ xuất lại` : "Sẽ tạo lại"}</em> : null}
                       {line.source ? <small>{line.source}</small> : null}
                     </span>
                   </button>
@@ -356,7 +366,9 @@ export function DubScript({
       {edits.length > 0 ? (
         <div className="script-retake">
           <p>
-            {captionsOnly
+            {edits.some(edit => edit.start !== undefined)
+              ? "Đổi riêng mốc giữ tiếng từng câu; xuất lại sẽ căn tiếng và ghi phụ đề theo mốc nháp."
+              : captionsOnly
               ? "Ghi lại chữ đã sửa lên video."
               : audioOnly
                 ? "Chỉ đọc lại câu đã sửa, rồi xuất lại audio."
@@ -367,7 +379,7 @@ export function DubScript({
               Bỏ sửa
             </button>
             <button type="button" className="check" onClick={() => onRetake(edits)} disabled={busy}>
-              {`Tạo lại ${edits.length} câu`}
+              {edits.some(edit => edit.start !== undefined) ? `Xuất lại · ${edits.length} câu đã sửa` : `Tạo lại ${edits.length} câu`}
             </button>
           </span>
         </div>

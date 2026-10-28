@@ -248,6 +248,7 @@ export default function ListenPart({
         </div>
       ) : null}
       <p className="part-note">{note || "Phát ngay từng câu để nghe. Chưa ghi file audio."}</p>
+      <p className="preview-hint">Bản nghe trước chưa qua kiểm tra tên và thuật ngữ như khi xuất audio.</p>
       {error ? <p className="error">{error}</p> : null}
       <textarea
         className="part-text"

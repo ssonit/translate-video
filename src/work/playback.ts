@@ -17,7 +17,7 @@ import {
   videoToSave,
 } from "./format";
 import type { Session } from "./state";
-import type { DubStatus, FinishedDub, KeptVersion, NameList, Prefs } from "./types";
+import type { DubStatus, FinishedDub, KeptVersion, LineEdit, NameList, Prefs, StructureEdit } from "./types";
 
 export function playbackActions(s: Session) {
   function watched() {
@@ -46,6 +46,7 @@ export function playbackActions(s: Session) {
     s.setDownloading(status.downloading);
     if (status.download) s.setDownload(status.download);
     s.setRunStartedAt(status.running && !status.downloading ? status.startedMs : null);
+    s.setRunPause(status.pause ?? { pausedMs: 0, sinceMs: null });
     s.setNow(stamp);
     if (status.video) s.setVideo(status.video);
     if (status.outputDir) s.setFolder(status.outputDir);
@@ -116,7 +117,7 @@ export function playbackActions(s: Session) {
   }
 
   async function downloadAudio() {
-    const source = s.result;
+    const source = s.playingKept && isAudio(s.playingKept) ? s.playingKept : s.result;
     if (!source || s.savingAudio) return;
     s.setOpenNote("");
     const base = fileName(isAudio(source) ? source : plainVideo(source))
@@ -376,9 +377,23 @@ export function playbackActions(s: Session) {
     }
   }
 
-  async function retakeLines(edits: { index: number; text: string }[]) {
+  async function selectVersion(path: string) {
+    if (!s.result || s.running || s.captioning || s.joining) return;
     const source = s.result;
-    if (!source || s.running || edits.length === 0) return;
+    const state = s.versionSelection.current;
+    const ticket = ++state.serial;
+    const current = () => state.result === source && state.serial === ticket && !state.busy && !s.ownsRun.current;
+    s.setOpenNote("");
+    try {
+      const selected = await invoke<string>("select_version", { result: source, path: path || s.listenFile || source });
+      if (!current()) return;
+      s.setPlayingKept(path ? selected : "");
+    } catch (error) { if (current()) s.setOpenNote(errorText(error)); }
+  }
+
+  async function retakeLines(edits: LineEdit[], structure?: StructureEdit) {
+    const source = s.result;
+    if (!source || s.running || (edits.length === 0 && !structure)) return;
     const node = s.mediaRef.current;
     if (node) {
       node.pause();
@@ -394,7 +409,7 @@ export function playbackActions(s: Session) {
     s.setView("progress");
     s.ownsRun.current = true;
     try {
-      const path = await invoke<string>("revise_lines", { path: source, edits });
+      const path = await invoke<string>("revise_lines", { path: source, edits, structure: structure ?? null });
       s.setResult(path);
       s.setResultEpoch((epoch) => epoch + 1);
       s.setListTick((tick) => tick + 1);
@@ -540,6 +555,7 @@ export function playbackActions(s: Session) {
     openAgain,
     runAgain,
     deleteKept,
+    selectVersion,
     retakeLines,
     addCaptions,
     submitNames,

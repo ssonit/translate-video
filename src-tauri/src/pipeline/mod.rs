@@ -1,5 +1,10 @@
+mod sample;
+pub(crate) use sample::export as export_sample;
 mod assemble;
+mod captions;
+pub(crate) use captions::review as review_captions;
 mod download;
+mod fit_batch;
 mod media;
 mod retake;
 mod speak;
@@ -11,7 +16,7 @@ pub(crate) use media::{
     detect_fast_path, extract, launch_for, media_duration, parse_clock, read_cues, reclaim_output,
     run_tool_with, settle_transcript, write_silence,
 };
-pub(crate) use retake::{retake_saved_names, revise, saved_name_edits, LinePatch};
+pub(crate) use retake::{retake_saved_names, revise, restructure, saved_name_edits, LinePatch};
 #[cfg(test)]
 pub(crate) use speak::preview_engine;
 pub(crate) use speak::speak_preview;
@@ -43,7 +48,7 @@ pub(crate) struct StepEvent {
     progress: Option<f64>,
 }
 
-#[derive(Serialize, serde::Deserialize, PartialEq)]
+#[derive(Clone, Serialize, serde::Deserialize, PartialEq)]
 pub(crate) struct RunSettings {
     pub(crate) target: String,
     pub(crate) voice: String,
@@ -250,15 +255,26 @@ pub(crate) fn run(
     audio_only: bool,
     text_only: bool,
     skip_translate: bool,
+    choice_override: Option<crate::TranslationChoice>,
+    render: crate::render::RenderSettings,
     cancel: &AtomicBool,
 ) -> Result<String, String> {
     let mut job = Job::open(video, output_dir)?;
     let (target_code, target_name) = clean_target(target);
     job.target = target_code.into();
-    let choice = crate::choice_path(app)
-        .ok()
-        .map(|path| crate::read_choice(&path))
-        .unwrap_or_default();
+    let choice = choice_override.unwrap_or_else(|| {
+        crate::choice_path(app)
+            .ok()
+            .map(|path| crate::read_choice(&path))
+            .unwrap_or_default()
+    });
+    crate::history::ensure_previous(&job.root)?;
+    if job.root.join("editing.json").exists() {
+        let previous: Option<RunSettings> = crate::job::read_json(&job.settings_path()).ok();
+        if previous.is_none() && !redo { return Err("Không đọc được cấu hình của việc đã biên tập. Giữ dữ liệu để kiểm tra trước khi chạy lại.".into()); }
+        let reset = redo || previous.as_ref().is_some_and(|p| p.target != target_code || p.skip_translate != skip_translate || p.use_terms != use_terms);
+        if reset { crate::editing::archive(&job)?; } else { crate::editing::Editing::load(&job.root)?; }
+    }
     // Báo ngay khi DeepSeek local chưa chạy, trước khi xóa bản cũ hay tốn thời gian chép lời.
     crate::ollama::require_deepseek_local(&choice, skip_translate)?;
     if redo {
@@ -272,6 +288,9 @@ pub(crate) fn run(
             )
         })?;
     }
+    let mut render=render;
+    if !audio_only {crate::media_assets::stage(&job,&mut render)?;}
+    crate::render::settle_for(&job, &render, audio_only, text_only)?;
     media::recover_incomplete_exports(&job, cancel)?;
     drop_stale(
         &job,
@@ -288,10 +307,18 @@ pub(crate) fn run(
     stopped(cancel)?;
 
     let mut clock = RunClock {
+        app,
         job: &job,
         started: Instant::now(),
         steps: Vec::new(),
     };
+    let edited = job.root.join("editing.json").exists();
+    let mut translated = if edited {
+        for id in ["extract", "transcribe", "split", "names", "terms", "translate"] {
+            report(app, id, "skipped", "Giữ các câu đã biên tập. Không chép lời hoặc dịch lại.");
+        }
+        crate::job::read_json(&job.translation_path())?
+    } else {
     timed(&mut clock, "extract", || extract(app, &job, cancel))
         .map_err(|error| fail(app, "extract", error))?;
     let cues = timed(&mut clock, "transcribe", || {
@@ -315,7 +342,7 @@ pub(crate) fn run(
         terms(app, &job, &lines, &choice, target_name, use_terms, cancel)
     })
     .map_err(|error| fail(app, "terms", error))?;
-    let mut translated = timed(&mut clock, "translate", || {
+    timed(&mut clock, "translate", || {
         if skip_translate {
             return keep_source(app, &job, &lines);
         }
@@ -330,7 +357,12 @@ pub(crate) fn run(
             cancel,
         )
     })
-    .map_err(|error| fail(app, "translate", error))?;
+    .map_err(|error| fail(app, "translate", error))?
+    };
+    if !audio_only || edited {
+        crate::timing::apply(&job.root, &mut translated)
+            .map_err(|error| fail(app, "fit", error))?;
+    }
     if text_only {
         report(app, "speak", "skipped", "Không đọc giọng.");
         report(app, "fit", "skipped", "Không co độ dài.");
@@ -343,6 +375,7 @@ pub(crate) fn run(
         if !file_ready(&captioned) {
             return Err("Không ghi được video có chữ.".into());
         }
+        crate::history::publish(&job.root, &captioned, &[], (!skip_translate).then(|| crate::history::Provider { provider: choice.provider.clone(), model: choice.model.clone() }), None, cancel)?;
         return Ok(captioned.to_string_lossy().into_owned());
     }
     timed(&mut clock, "speak", || {
@@ -353,7 +386,7 @@ pub(crate) fn run(
             &choice,
             target_name,
             audio_only,
-            skip_translate,
+            skip_translate || edited || job.root.join("timing.json").is_file(),
             cancel,
         )
     })
@@ -375,6 +408,7 @@ pub(crate) fn run(
         if !file_ready(&spoken) {
             return Err("Không ghi được audio bản dịch.".into());
         }
+        crate::history::publish(&job.root, &spoken, &[], (!skip_translate).then(|| crate::history::Provider { provider: choice.provider.clone(), model: choice.model.clone() }), None, cancel)?;
         return Ok(spoken.to_string_lossy().into_owned());
     }
     timed(&mut clock, "merge", || {
@@ -387,6 +421,7 @@ pub(crate) fn run(
     } else {
         job.result()
     };
+    crate::history::publish(&job.root, &played, &[], (!skip_translate).then(|| crate::history::Provider { provider: choice.provider.clone(), model: choice.model.clone() }), None, cancel)?;
     Ok(played.to_string_lossy().into_owned())
 }
 
@@ -397,6 +432,7 @@ struct StepTime {
 
 // Logs each step as it finishes, then the total and which steps took the most time.
 struct RunClock<'a> {
+    app: &'a AppHandle,
     job: &'a Job,
     started: Instant,
     steps: Vec<StepTime>,
@@ -404,7 +440,14 @@ struct RunClock<'a> {
 
 impl Drop for RunClock<'_> {
     fn drop(&mut self) {
-        log_total(self.job, self.started.elapsed(), &self.steps);
+        let paused = self.app.state::<DubControl>().read().pause.paused_ms;
+        log_total(
+            self.job,
+            self.started
+                .elapsed()
+                .saturating_sub(Duration::from_millis(paused)),
+            &self.steps,
+        );
     }
 }
 
@@ -485,9 +528,13 @@ fn log_line(job: &Job, line: &str) {
 }
 
 fn timed<T>(clock: &mut RunClock, step: &'static str, work: impl FnOnce() -> T) -> T {
+    let before = clock.app.state::<DubControl>().read().pause.paused_ms;
     let started = Instant::now();
     let result = work();
-    let took = started.elapsed();
+    let after = clock.app.state::<DubControl>().read().pause.paused_ms;
+    let took = started
+        .elapsed()
+        .saturating_sub(Duration::from_millis(after.saturating_sub(before)));
     clock.steps.push(StepTime { id: step, took });
     log_timing(clock.job, step, took);
     result

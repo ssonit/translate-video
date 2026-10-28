@@ -1,6 +1,20 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { appendJobs, parseSavedQueue, queueKey, queueLabel, restoreQueue, takeActive, type QueueJob } from "./queue.ts";
+import { DEFAULT_RENDER } from "./work/renderSettings.ts";
+
+test("queued video keeps its own layout after reload and drops unknown fields", () => {
+  const first = { ...job("a.mp4"), render: { ...DEFAULT_RENDER, aspect: "9:16", focusX: 75, secret: "discard" } };
+  const second = { ...job("b.mp4"), render: { ...DEFAULT_RENDER, aspect: "1:1", color: "#ffcc00" } };
+  const loaded = parseSavedQueue(JSON.stringify({ waiting: [first,second] }));
+  assert.equal(loaded.waiting[0].render?.aspect, "9:16");
+  assert.equal(loaded.waiting[0].render?.focusX, 75);
+  assert.equal(loaded.waiting[1].render?.aspect, "1:1");
+  assert.equal(loaded.waiting[1].render?.color, "#ffcc00");
+  assert.ok(!JSON.stringify(loaded).includes("secret"));
+  const legacy = parseSavedQueue(JSON.stringify({ waiting: [job("old.mp4")] }));
+  assert.equal(legacy.waiting[0].render, undefined);
+});
 
 function job(source: string, mode: "file" | "link" = "file"): QueueJob {
   return {
@@ -137,4 +151,21 @@ test("starting a video parks the previous one back on the queue", () => {
     retry.waiting.map((item) => item.source),
     ["D:\\a.mp4", "D:\\b.mp4"],
   );
+});
+
+test("service, model and terminology stay with each queued job after reload", () => {
+  const first = { ...job("D:\\a.mp4"), translation: { provider: "gemini", model: "gemini-2.5-flash", useTerms: true } };
+  const second = { ...job("D:\\b.mp4"), translation: { provider: "deepseek-local", model: "deepseek-expert", useTerms: false } };
+  const restored = parseSavedQueue(JSON.stringify({ waiting: [second], current: first }));
+  assert.deepEqual(restoreQueue(restored, false).map((item) => item.translation), [first.translation, second.translation]);
+  const legacy = parseSavedQueue(JSON.stringify({ waiting: [job("D:\\old.mp4")], current: null }));
+  assert.equal(legacy.waiting.length, 1);
+  assert.equal(legacy.waiting[0].translation, undefined);
+});
+
+test("queue decoding whitelists configuration fields and does not carry stray keys", () => {
+  const raw = { ...job("D:\\a.mp4"), apiKey: "unwanted", translation: { provider: "gemini", model: "gemini-2.5-flash", useTerms: false, apiKey: "unwanted" } };
+  const restored = parseSavedQueue(JSON.stringify({ waiting: [raw], current: raw }));
+  assert.equal(JSON.stringify(restored).includes("unwanted"), false);
+  assert.equal(restored.current?.translation?.provider, "gemini");
 });

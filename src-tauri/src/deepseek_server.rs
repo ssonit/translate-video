@@ -43,7 +43,7 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 fn deepseek_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../Deepseek-API")
+    crate::runtime_paths::tool_dir("Deepseek-API")
 }
 
 fn python_exe() -> PathBuf {

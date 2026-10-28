@@ -1,5 +1,5 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
-import type { RefObject } from "react";
+import { useEffect, useState, type RefObject } from "react";
 import { showListenStop } from "../listenStop";
 import {
   captionedVideo,
@@ -9,7 +9,6 @@ import {
   isListen,
   showAsTextOnly,
   watchHeading,
-  keptLabel,
   languageName,
   parentFolder,
   plainVideo,
@@ -18,7 +17,8 @@ import {
 } from "./format";
 import { ResultMedia } from "./media";
 import { DubScript } from "./script";
-import type { FinishedDub, KeptVersion, LinePick, ScriptLine } from "./types";
+import { VersionHistory } from "./VersionHistory";
+import type { FinishedDub, KeptVersion, LineEdit, LinePick, ScriptLine, StructureEdit } from "./types";
 
 export function WatchPane({
   shown,
@@ -29,6 +29,7 @@ export function WatchPane({
   joining,
   joinProgress,
   playable,
+  loading = false,
   resultEpoch,
   mediaRef,
   kept,
@@ -58,8 +59,11 @@ export function WatchPane({
   onStop,
   onAddCaptions,
   onAgain,
+  onEditExport,
+  onApplyVersion,
   onShowResult,
   onRetake,
+  onStructure,
 }: {
   shown: string;
   result: string;
@@ -69,6 +73,7 @@ export function WatchPane({
   joining: boolean;
   joinProgress: number | null;
   playable: boolean;
+  loading?: boolean;
   resultEpoch: number;
   mediaRef: RefObject<HTMLMediaElement | null>;
   kept: KeptVersion[];
@@ -98,9 +103,26 @@ export function WatchPane({
   onStop: () => void;
   onAddCaptions: () => void;
   onAgain: () => void;
+  onEditExport: () => void;
+  onApplyVersion: (path: string) => void;
   onShowResult: (path: string) => void;
-  onRetake: (edits: { index: number; text: string }[]) => void;
+  onRetake: (edits: LineEdit[]) => void;
+  onStructure: (action: StructureEdit) => void;
 }) {
+  const [metadataReady, setMetadataReady] = useState(false);
+  const [mediaNote, setMediaNote] = useState("");
+  useEffect(() => {
+    // Retake releases the old media handle before replacing its file. An error
+    // from that released element must not remain on the newly loaded export.
+    setMediaNote("");
+    setMetadataReady((mediaRef.current?.readyState ?? 0) >= 1);
+  }, [shown, resultEpoch, mediaRef]);
+  const waiting = loading || (playable && !isAudio(shown) && !metadataReady);
+  const mediaReady = () => setMetadataReady(true);
+  const mediaFailed = () => {
+    setMetadataReady(true);
+    setMediaNote(isAudio(shown) ? "Không đọc được tiếng. Thử mở bằng trình phát." : "Không đọc được hình video. Thử mở bằng trình phát.");
+  };
   const src = resultEpoch > 0 ? `${convertFileSrc(shown)}?v=${resultEpoch}` : convertFileSrc(shown);
   const textOnly = showAsTextOnly(result, watched?.path ?? "", textOnlyRun);
   // Lưu đúng video đang xem, nên có cả ở bản đã cất. Kết quả chỉ audio thì không có nút này.
@@ -111,10 +133,15 @@ export function WatchPane({
   ) : null;
   return (
     <div
-      className={["pane-fill watch", !playingKept && lines.length > 0 ? "has-script" : "", isAudio(shown) ? "is-audio" : "", joining ? "is-joining" : ""]
+      className={["pane-fill watch", waiting ? "is-loading" : "", !playingKept && lines.length > 0 ? "has-script" : "", isAudio(shown) ? "is-audio" : "", joining ? "is-joining" : ""]
         .filter(Boolean)
         .join(" ")}
+      aria-busy={waiting}
     >
+      {waiting ? <div className="watch-loading" role="status">
+        <span className="watch-loading-dot" aria-hidden="true" />
+        <p>{isAudio(shown) ? "Đang mở audio…" : "Đang mở video…"}</p>
+      </div> : null}
       <div className="result-head">
         <strong>
           {playingKept
@@ -129,31 +156,21 @@ export function WatchPane({
       </div>
       <div className="versions">
         <div className="version-row">
-          <button type="button" className={playingKept ? "link" : "link is-on"} onClick={onPlayCurrent}>
+          <button type="button" className={playingKept ? "link" : "link is-on"} onClick={onPlayCurrent} disabled={running || captioning || joining}>
             Đang dùng{watched?.language ? ` · ${languageName(watched.language)}` : ""}
           </button>
         </div>
-        {kept.map((item) => (
-          <div key={item.path} className="version-row">
-            <button
-              type="button"
-              className={sameFile(playingKept, item.path) ? "link is-on" : "link"}
-              onClick={() => onPlayKept(item.path)}
-            >
-              {keptLabel(item)}
-            </button>
-            <button type="button" className="link" onClick={() => void onDeleteKept(item)}>
-              Xóa
-            </button>
-          </div>
-        ))}
+        {!playingKept ? <button type="button" className="link" title="Âm thanh, cách đọc, logo và chữ" disabled={running || captioning || joining} onClick={onEditExport}>Sửa bản xuất</button> : null}
+        <VersionHistory result={result} shown={shown} items={kept} blocked={running || captioning || joining} onPlay={onPlayKept} onApply={onApplyVersion} onDelete={onDeleteKept} />
       </div>
+      <div className="watch-media">
       {playable ? (
         isAudio(shown) ? (
-          <ResultMedia key={`${shown}:${resultEpoch}`} kind="audio" src={src} mediaRef={mediaRef} />
+          <ResultMedia key={`${shown}:${resultEpoch}`} kind="audio" src={src} mediaRef={mediaRef} onError={mediaFailed} />
         ) : (
           <div className="player-slot">
             <ResultMedia key={`${shown}:${resultEpoch}`} kind="video" src={src} mediaRef={mediaRef}
+              onReady={mediaReady} onError={mediaFailed}
               onDownload={videoToSave(result, playingKept) ? onDownloadVideo : undefined} savingVideo={savingVideo} />
           </div>
         )
@@ -171,6 +188,7 @@ export function WatchPane({
                   Mở bằng trình phát
                 </button>
                 {saveVideo}
+                {isAudio(playingKept) ? <button type="button" className="check" disabled={savingAudio} onClick={onDownloadAudio}>{savingAudio ? "Đang lưu…" : "Tải audio"}</button> : null}
               </div>
               <div className="result-tools">
                 <button type="button" className="link" onClick={() => void onOpen(parentFolder(playingKept))}>
@@ -288,12 +306,15 @@ export function WatchPane({
             </>
           )}
         </div>
+        {mediaNote ? <p className="error">{mediaNote}</p> : null}
         {openNote ? <p className="error">{openNote}</p> : null}
         {captionNote ? <p className="error">{captionNote}</p> : null}
         {error ? <p className="error">{error}</p> : null}
       </div>
+      </div>
       {!playingKept && lines.length > 0 ? (
         <DubScript
+          resultPath={result}
           lines={lines}
           videoRef={mediaRef}
           playable={playable}
@@ -301,8 +322,9 @@ export function WatchPane({
           onPicks={onPicks}
           audioOnly={isAudio(result)}
           captionsOnly={textOnly}
-          busy={running}
+          busy={running || captioning || joining}
           onRetake={onRetake}
+          onStructure={onStructure}
         />
       ) : null}
     </div>

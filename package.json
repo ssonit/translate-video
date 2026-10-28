@@ -7,6 +7,9 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
+    "test:queue": "node scripts/test-queue-actions.mjs",
+    "test:release": "node --test scripts/test-windows-release.mjs",
+    "verify:local": "node scripts/verify-local.mjs",
     "tauri": "tauri"
   },
   "dependencies": {

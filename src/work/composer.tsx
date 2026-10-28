@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { DeepseekServerRow, useDeepseekServer } from "../DeepseekServer";
 import LocalModels from "../LocalModels";
 import { LockedNote } from "../SetupChip";
@@ -9,6 +10,8 @@ import { RunOptions } from "./options";
 import type { QueueJob } from "../queue";
 
 export function Composer({
+  styleEditor,
+  queueTools,
   mode,
   onMode,
   composeVideo,
@@ -56,13 +59,14 @@ export function Composer({
   onVoice,
   onPreview,
   queue,
-  onDrop,
   onRun,
   onLive,
   lock,
   onTools,
   onChanged,
 }: {
+  styleEditor: ReactNode;
+  queueTools: ReactNode;
   mode: "file" | "link";
   onMode: (mode: "file" | "link") => void;
   composeVideo: string;
@@ -110,7 +114,6 @@ export function Composer({
   onVoice: (name: string) => void;
   onPreview: () => void;
   queue: QueueJob[];
-  onDrop: (id: string) => void;
   onRun: () => void;
   onLive: () => void;
   // Dòng báo thiếu mục bắt buộc. Trống thì không khóa.
@@ -142,7 +145,8 @@ export function Composer({
     customModel || (model !== "" && !hint.models.includes(model));
   const hasSource =
     mode === "file" ? composeVideo !== "" : composeLink.trim() !== "";
-  const canRun = hasSource && folder !== "" && !captioning && !running;
+  const needsKey = !skipTranslate && pending !== "";
+  const canRun = hasSource && folder !== "" && !captioning && !running && !needsKey;
   // Thiếu mục bắt buộc thì khóa các nút chạy. Chọn video, đổi dịch vụ, bật server vẫn làm được.
   const locked = lock !== "";
 
@@ -218,16 +222,27 @@ export function Composer({
             </p>
           </article>
         )}
+        <div className="compose-section output-section">
+          <RunOptions
+            audioOnly={audioOnly}
+            textOnly={textOnly}
+            burnCaptions={burnCaptions}
+            disabled={captioning}
+            onAudioOnly={onAudioOnly}
+            onTextOnly={onTextOnly}
+            onBurn={onBurn}
+          />
+        </div>
         <div className="compose-section">
-          <p className="section-label">Ngôn ngữ & giọng đọc</p>
+          <p className="section-label">{textOnly ? "Ngôn ngữ phụ đề" : "Ngôn ngữ & giọng đọc"}</p>
           <div className="tune path path-link">
             <label>
-              {skipTranslate ? "Ngôn ngữ giọng" : "Dịch sang"}
+              {skipTranslate ? textOnly ? "Ngôn ngữ phụ đề" : "Ngôn ngữ giọng" : "Dịch sang"}
               <select
                 className="pill-select"
                 value={target}
                 aria-label={
-                  skipTranslate ? "Ngôn ngữ giọng" : "Ngôn ngữ dịch sang"
+                  skipTranslate ? textOnly ? "Ngôn ngữ phụ đề" : "Ngôn ngữ giọng" : "Ngôn ngữ dịch sang"
                 }
                 onChange={(event) => onTarget(event.target.value)}
               >
@@ -238,7 +253,7 @@ export function Composer({
                 ))}
               </select>
             </label>
-            <label>
+            {!textOnly ? <label>
               Giọng đọc
               {voices.length > 0 ? (
                 <span className="voice-pick">
@@ -269,7 +284,7 @@ export function Composer({
                   voices/{target}.
                 </p>
               )}
-            </label>
+            </label> : null}
           </div>
           {textOnly ? (
             <p className="key-note">
@@ -277,6 +292,7 @@ export function Composer({
             </p>
           ) : null}
         </div>
+        {styleEditor}
         <div className="compose-section translation-section">
           <div className="run-options">
             <label
@@ -460,55 +476,30 @@ export function Composer({
             </details>
           )}
         </div>
-        <div className="compose-section output-section">
-          <p className="section-label">Kết quả</p>
-          <RunOptions
-            audioOnly={audioOnly}
-            textOnly={textOnly}
-            burnCaptions={burnCaptions}
-            disabled={captioning}
-            onAudioOnly={onAudioOnly}
-            onTextOnly={onTextOnly}
-            onBurn={onBurn}
-          />
-        </div>
         <p className="preview-hint">
           {textOnly
             ? "Giữ tiếng gốc và ghi lời dịch lên video."
             : audioOnly
               ? "Nghe từng đoạn trong lúc dịch, xuất audio khi đã xong."
-              : "Xem trước trong lúc dịch, ghép video khi đã sẵn sàng."}
+              : "Xem trước trong lúc dịch. Khi xuất, app sẽ kiểm tra tên và căn lại thời gian giọng đọc."}
+        </p>
+        <p className="preview-hint">{textOnly
+          ? "Xem trước chưa áp dụng sửa tên, thuật ngữ, khung xuất và kiểu chữ đã chọn."
+          : audioOnly
+            ? "Nghe trước chưa qua kiểm tra tên và thuật ngữ như khi xuất audio."
+            : "Xem trước chưa áp dụng sửa tên, thuật ngữ, co độ dài, khung xuất và kiểu chữ; giọng và phụ đề có thể khác bản xuất."}</p>
+        <p className="output-summary">
+          {textOnly ? "Video phụ đề" : audioOnly ? "Audio" : "Video lồng tiếng"} · {languageName(target)}
+          {!textOnly && voice ? ` · ${voice}` : ""}
+          {!textOnly && !audioOnly && burnCaptions ? " · Có phụ đề" : ""}
+          <span title={folder}>Lưu tại: {folder || "Chưa chọn folder"}</span>
         </p>
         {running ? (
           <p className="key-note">
             Video đang chạy giữ nguyên. Video thêm sau chờ đến lượt.
           </p>
         ) : null}
-        {queue.length > 0 ? (
-          <div className="wait-list">
-            <p className="queue-label">Hàng đợi</p>
-            {queue.map((item) => (
-              <div key={item.id} className="wait-row">
-                <span title={item.source}>
-                  <strong>{item.label}</strong>
-                  <em>
-                    Đang chờ · {languageName(item.target)}
-                    {item.audioOnly ? " · chỉ audio" : ""}
-                    {item.textOnly ? " · chỉ chữ" : ""}
-                    {item.skipTranslate ? " · chỉ đổi giọng" : ""}
-                  </em>
-                </span>
-                <button
-                  type="button"
-                  aria-label={`Bỏ ${item.label}`}
-                  onClick={() => onDrop(item.id)}
-                >
-                  Bỏ
-                </button>
-              </div>
-            ))}
-          </div>
-        ) : null}
+        {queueTools}
         {queueNote ? <p className="key-note">{queueNote}</p> : null}
         {modelNote ? <p className="key-note">{modelNote}</p> : null}
         {voiceNote ? <p className="error">{voiceNote}</p> : null}
@@ -536,6 +527,7 @@ export function Composer({
             }
             disabled={
               locked ||
+              (needsKey && hasSource) ||
               captioning ||
               folder === "" ||
               (running

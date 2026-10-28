@@ -19,7 +19,10 @@
     ],
     "security": {
       "csp": null,
-      "assetProtocol": { "enable": true, "scope": [] }
+      "assetProtocol": {
+        "enable": true,
+        "scope": []
+      }
     }
   },
   "bundle": {
@@ -31,6 +34,17 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "resources": {
+      "../scripts/faster_whisper.py": "scripts/faster_whisper.py",
+      "douyin/fetch.py": "douyin/fetch.py",
+      "douyin/__init__.py": "douyin/__init__.py",
+      "douyin/dtk/__init__.py": "douyin/dtk/__init__.py",
+      "douyin/dtk/signing/__init__.py": "douyin/dtk/signing/__init__.py",
+      "douyin/dtk/signing/native/abogus.py": "douyin/dtk/signing/native/abogus.py",
+      "douyin/dtk/signing/native/sm3.py": "douyin/dtk/signing/native/sm3.py",
+      "douyin/dtk/signing/native/websign.py": "douyin/dtk/signing/native/websign.py",
+      "douyin/dtk/signing/native/__init__.py": "douyin/dtk/signing/native/__init__.py"
+    }
   }
 }

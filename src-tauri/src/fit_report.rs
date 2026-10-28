@@ -74,13 +74,64 @@ pub(crate) struct ScriptLine {
     line: TranslatedLine,
     #[serde(skip_serializing_if = "Option::is_none")]
     fit: Option<FitWarning>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    missing_audio: Option<bool>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    captions: Vec<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    revision: Option<String>,
+    id: String,
+    sources: Vec<usize>,
+    structure_undo: bool,
+    structure_undo_blocked: bool,
 }
 
 pub(crate) fn annotate(result: &Path, lines: Vec<TranslatedLine>) -> Vec<ScriptLine> {
+    let revision = result.parent().and_then(|root| crate::timing::revision(root).ok());
+    let document = result.parent().and_then(|root| crate::editing::Editing::load(root).ok().flatten());
+    // Audio follows a different timeline; only a video with burnt captions gets
+    // reading warnings. No ffprobe, network, or write is needed to inspect cues.
+    let has_captions = result.file_name().is_some_and(|name|
+        name.to_string_lossy().to_ascii_lowercase().ends_with(".chu.mp4"));
+    let mut caption_notes = if has_captions {
+        crate::pipeline::review_captions(&lines).into_iter()
+    } else { vec![Vec::new(); lines.len()].into_iter() };
     let mut rows: Vec<_> = lines
         .into_iter()
-        .map(|line| ScriptLine { line, fit: None })
+        .enumerate()
+        .map(|(index, line)| ScriptLine {
+            line,
+            fit: None,
+            missing_audio: None,
+            captions: caption_notes.next().unwrap_or_default(),
+            revision: revision.clone(),
+            id: document.as_ref().and_then(|d| d.cues.get(index)).map(|c| c.id.clone()).unwrap_or_else(|| crate::editing::legacy_id(index)),
+            sources: document.as_ref().and_then(|d| d.cues.get(index)).map(|c| c.sources.clone()).unwrap_or_else(|| vec![index]),
+            structure_undo: document.as_ref().is_some_and(|d| d.can_undo()),
+            structure_undo_blocked: document.as_ref().is_some_and(|d| d.undo_blocked()),
+        })
         .collect();
+    let Some(root) = result.parent() else {
+        return rows;
+    };
+    let text_only = read_json::<crate::pipeline::RunSettings>(&root.join("settings.json"))
+        .ok()
+        .is_some_and(|settings| settings.text_only);
+    // These are source WAVs for rebuilding, not evidence that the finished
+    // video is silent. Continuous listening uses passage WAVs, not line WAVs.
+    if !text_only && !crate::job::is_listen_audio(result) {
+        for (index, row) in rows.iter_mut().enumerate() {
+            if row.line.translation.trim().is_empty() {
+                continue;
+            }
+            let path = crate::editing::wav_path(root, index + 1);
+            let missing = match std::fs::metadata(path) {
+                Ok(meta) => !meta.is_file() || meta.len() == 0,
+                Err(error) => error.kind() == std::io::ErrorKind::NotFound,
+            };
+            row.missing_audio = missing.then_some(true);
+        }
+    }
     // Continuous audio uses another timeline. It must not inherit video warnings.
     if !result
         .extension()
@@ -88,9 +139,6 @@ pub(crate) fn annotate(result: &Path, lines: Vec<TranslatedLine>) -> Vec<ScriptL
     {
         return rows;
     }
-    let Some(root) = result.parent() else {
-        return rows;
-    };
     let entries: Vec<FitEntry> = read_json(&root.join("fit-report.json")).unwrap_or_default();
     for entry in entries {
         let Some(index) = entry.line.checked_sub(1) else {
@@ -111,6 +159,31 @@ pub(crate) fn annotate(result: &Path, lines: Vec<TranslatedLine>) -> Vec<ScriptL
 mod tests {
     use super::*;
     use crate::timeline::{place_all, Slot};
+
+    #[test]
+    fn caption_review_is_read_only_and_only_attached_to_captioned_video() {
+        let root = std::env::temp_dir().join(format!("caption-review-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let saved = root.join("translation.json");
+        let lines = vec![TranslatedLine {
+            start: 0.0, end: 0.2, source: "Original".into(),
+            translation: "Câu này rất dài so với thời gian hiển thị".into(),
+        }];
+        crate::job::write_json(&saved, &lines).unwrap();
+        let before = std::fs::read(&saved).unwrap();
+        let rows = annotate(&root.join("test.chu.mp4"), lines.clone());
+        assert_eq!(rows[0].captions, vec!["short_duration", "dense_text"]);
+        assert_eq!(serde_json::to_value(&rows).unwrap()[0]["captions"][1], "dense_text");
+        for name in ["test.mp4", "test.m4a", "test.nghe.m4a"] {
+            let rows = annotate(&root.join(name), lines.clone());
+            assert!(rows[0].captions.is_empty());
+            assert!(serde_json::to_value(&rows).unwrap()[0].get("captions").is_none());
+        }
+        assert_eq!(std::fs::read(&saved).unwrap(), before);
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+        std::fs::remove_file(saved).unwrap();
+        std::fs::remove_dir(root).unwrap();
+    }
 
     #[test]
     fn reports_speed_without_inventing_a_cut() {
@@ -193,6 +266,70 @@ mod tests {
         std::fs::write(&report, "broken").unwrap();
         assert!(annotate(&root.join("test.mp4"), lines)[0].fit.is_none());
         std::fs::remove_file(report).unwrap();
+        std::fs::remove_dir(root).unwrap();
+    }
+
+    #[test]
+    fn missing_line_audio_is_separate_from_blank_text_and_fit_warnings() {
+        let root = std::env::temp_dir().join(format!("missing-line-audio-{}", std::process::id()));
+        let wavs = root.join("lines");
+        std::fs::create_dir_all(&wavs).unwrap();
+        let line = TranslatedLine {
+            start: 0.0,
+            end: 1.0,
+            source: "Hi".into(),
+            translation: "Chào".into(),
+        };
+        let lines = vec![
+            line.clone(),
+            TranslatedLine {
+                translation: " ".into(),
+                ..line.clone()
+            },
+            line.clone(),
+            line,
+        ];
+        crate::wav::write_wav(
+            &wavs.join("003.wav"),
+            &crate::wav::Pcm {
+                rate: 22050,
+                samples: vec![1; 2205],
+            },
+        )
+        .unwrap();
+        std::fs::write(wavs.join("004.wav"), b"").unwrap();
+        let rows = annotate(&root.join("test.mp4"), lines.clone());
+        assert_eq!(rows[0].missing_audio, Some(true));
+        assert_eq!(rows[1].missing_audio, None);
+        assert_eq!(rows[2].missing_audio, None);
+        assert_eq!(rows[3].missing_audio, Some(true));
+        assert!(rows.iter().all(|row| row.fit.is_none()));
+        let json = serde_json::to_value(&rows[2]).unwrap();
+        assert!(json.get("missing_audio").is_none());
+        assert_eq!(json["translation"], "Chào");
+        assert_eq!(
+            annotate(&root.join("test.m4a"), lines.clone())[0].missing_audio,
+            Some(true)
+        );
+        assert!(annotate(&root.join("test.nghe.m4a"), lines.clone())
+            .iter()
+            .all(|row| row.missing_audio.is_none()));
+        std::fs::write(
+            root.join("settings.json"),
+            r#"{"target":"vi","voice":"test","text_only":true}"#,
+        )
+        .unwrap();
+        assert!(annotate(&root.join("test.chu.mp4"), lines)
+            .iter()
+            .all(|row| row.missing_audio.is_none()));
+        // Annotation only reads the job; it does not synthesize or replace files.
+        assert!(!wavs.join("001.wav").exists());
+        assert!(!wavs.join("002.wav").exists());
+        assert_eq!(std::fs::metadata(wavs.join("004.wav")).unwrap().len(), 0);
+        std::fs::remove_file(wavs.join("003.wav")).unwrap();
+        std::fs::remove_file(wavs.join("004.wav")).unwrap();
+        std::fs::remove_file(root.join("settings.json")).unwrap();
+        std::fs::remove_dir(wavs).unwrap();
         std::fs::remove_dir(root).unwrap();
     }
 }

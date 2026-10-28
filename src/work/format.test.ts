@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { againPlan, draftProgress, freshSteps, showAsTextOnly, videoToSave, watchHeading } from "./format.ts";
+import { againPlan, draftProgress, freshSteps, showAsTextOnly, videoToSave, watchHeading, overallEstimate, workflowPhases } from "./format.ts";
 import type { DraftBrief } from "./types.ts";
 
 test("text only skips the voice steps", () => {
@@ -11,6 +11,29 @@ test("text only skips the voice steps", () => {
   const dubbed = freshSteps(false);
   assert.equal(dubbed.find((step) => step.id === "speak")?.state, "pending");
   assert.equal(dubbed.find((step) => step.id === "merge")?.label, "Ghép video");
+});
+
+test("waiting for names freezes processing time and hides ETA until resumed", () => {
+  const steps = freshSteps().map((step) => ({ ...step, state: step.id === "extract" ? "done" : "pending" }));
+  const paused = { pausedMs: 5000, sinceMs: 20000 };
+  const before = overallEstimate(steps, 1000, 30000, paused);
+  const later = overallEstimate(steps, 1000, 90000, paused);
+  assert.equal(before.elapsed, 14);
+  assert.deepEqual(before, later);
+  assert.equal(later.remaining, null);
+  const resumed = overallEstimate(steps, 1000, 100000, { pausedMs: 75000, sinceMs: null });
+  assert.equal(resumed.elapsed, 24);
+  assert.ok(resumed.remaining! > 0);
+  assert.equal(overallEstimate(steps, null, 100000, paused).elapsed, 0);
+});
+
+test("four phases retain pending work, errors and the explicit name wait", () => {
+  const steps = freshSteps(false, true).map((step) => ({ ...step, state: ["extract", "transcribe", "split"].includes(step.id) ? "done" : step.state }));
+  const phases = workflowPhases(steps, true);
+  assert.deepEqual(phases.map((phase) => phase.state), ["done", "waiting", "pending", "pending"]);
+  const failed = steps.map((step) => step.id === "translate" ? { ...step, state: "error" } : step);
+  assert.equal(workflowPhases(failed)[2].state, "error");
+  assert.equal(workflowPhases(freshSteps().map((step) => ({ ...step, state: "skipped" })))[3].state, "done");
 });
 
 test("a text-only result keeps its own heading before the library reloads", () => {

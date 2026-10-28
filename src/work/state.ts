@@ -1,3 +1,5 @@
+import { readQueueHistory, readQueuePolicy } from "../queueControl";
+import { readRender, readPresets } from "./renderSettings";
 import { useRef, useState } from "react";
 import { readSavedQueue, restoreQueue, type QueueJob } from "../queue";
 import type { WatchUpdate } from "../WatchLive";
@@ -10,11 +12,15 @@ import type {
   NameFix,
   NamesPending,
   ScriptLine,
+  RunPause,
   StepView,
   View,
 } from "./types";
 
 export function useWorkState() {
+  const [render, setRender] = useState(readRender);
+  const [presets, setPresets] = useState(readPresets);
+  const [presetApplying, setPresetApplying] = useState(false);
   const [target, setTarget] = useState(() => {
     try {
       const saved = localStorage.getItem("target-language");
@@ -23,6 +29,7 @@ export function useWorkState() {
       return "vi";
     }
   });
+  const pendingVoice=useRef<{lang:string;name:string}|null>(null);
   const [voices, setVoices] = useState<string[]>([]);
   const [voice, setVoice] = useState("");
   const [voiceNote, setVoiceNote] = useState("");
@@ -32,6 +39,10 @@ export function useWorkState() {
   const [composeVideo, setComposeVideo] = useState("");
   const [composeLink, setComposeLink] = useState("");
   const [queue, setQueue] = useState<QueueJob[]>(() => restoreQueue(readSavedQueue(), false));
+  const [queuePolicy,setQueuePolicy]=useState(readQueuePolicy);
+  const [queueHistory,setQueueHistory]=useState(readQueueHistory);
+  const queueHistoryRef=useRef(queueHistory);
+  const skipActive=useRef(false);
   const [queueNote, setQueueNote] = useState("");
   const [downloading, setDownloading] = useState(false);
   const [download, setDownload] = useState<{ detail: string; progress: number | null }>({
@@ -57,7 +68,14 @@ export function useWorkState() {
   const [error, setError] = useState("");
   const [result, setResult] = useState("");
   const [resultTextOnly, setResultTextOnly] = useState(false);
-  const [runStartedAt, setRunStartedAt] = useState<number | null>(null);
+  const [runStartedAt, updateRunStartedAt] = useState<number | null>(null);
+  const [runPause, setRunPause] = useState<RunPause>({ pausedMs: 0, sinceMs: null });
+  function setRunStartedAt(value: number | null) {
+    updateRunStartedAt(value);
+    setRunPause({ pausedMs: 0, sinceMs: null });
+  }
+  const runPauseRef=useRef(runPause);
+  runPauseRef.current=runPause;
   const [now, setNow] = useState(() => Date.now());
   const [provider, setProvider] = useState("local");
   const [model, setModel] = useState("");
@@ -67,6 +85,8 @@ export function useWorkState() {
   const [pending, setPending] = useState("");
   const [keyDraft, setKeyDraft] = useState("");
   const [playable, setPlayable] = useState(false);
+  const [checkedMedia, setCheckedMedia] = useState("");
+  const [loadedWatchData, setLoadedWatchData] = useState("");
   const [captioning, setCaptioning] = useState(false);
   const [captionProgress, setCaptionProgress] = useState<number | null>(null);
   const [captionNote, setCaptionNote] = useState("");
@@ -79,6 +99,10 @@ export function useWorkState() {
   const [lines, setLines] = useState<ScriptLine[]>([]);
   const [picks, setPicks] = useState<Record<number, LinePick>>({});
   const [resultEpoch, setResultEpoch] = useState(0);
+  const versionSelection = useRef({ result, busy: false, serial: 0 });
+  if (versionSelection.current.result !== result) versionSelection.current.serial += 1;
+  versionSelection.current.result = result;
+  versionSelection.current.busy = running || captioning || joining;
   const [view, setView] = useState<View>("new");
   const viewRef = useRef<View>("new");
   viewRef.current = view;
@@ -117,8 +141,10 @@ export function useWorkState() {
   const mediaRef = useRef<HTMLMediaElement | null>(null);
 
   return {
+    render, setRender, presets, setPresets, presetApplying, setPresetApplying,
     target,
     setTarget,
+    pendingVoice,
     voices,
     setVoices,
     voice,
@@ -137,6 +163,7 @@ export function useWorkState() {
     setComposeLink,
     queue,
     setQueue,
+    queuePolicy,setQueuePolicy,queueHistory,setQueueHistory,queueHistoryRef,skipActive,runPauseRef,
     queueNote,
     setQueueNote,
     downloading,
@@ -183,6 +210,8 @@ export function useWorkState() {
     setResultTextOnly,
     runStartedAt,
     setRunStartedAt,
+    runPause,
+    setRunPause,
     now,
     setNow,
     provider,
@@ -201,6 +230,10 @@ export function useWorkState() {
     setKeyDraft,
     playable,
     setPlayable,
+    checkedMedia,
+    setCheckedMedia,
+    loadedWatchData,
+    setLoadedWatchData,
     captioning,
     setCaptioning,
     captionProgress,
@@ -225,6 +258,7 @@ export function useWorkState() {
     setPicks,
     resultEpoch,
     setResultEpoch,
+    versionSelection,
     view,
     setView,
     viewRef,

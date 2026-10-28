@@ -1,0 +1,22 @@
+.versions:has(.version-history) { overflow: visible; flex-wrap: wrap; position: relative; z-index: 12; }
+.version-history { position: relative; margin-left: auto; min-width: 0; }
+.version-history-panel { position: absolute; top: calc(100% + 8px); right: 0; z-index: 40; width: min(560px, calc(100vw - 80px)); max-height: min(70vh, 650px); overflow: auto; padding: 13px; border: 1px solid var(--line-strong); border-radius: 13px; background: var(--surface); box-shadow: 0 16px 45px #0008; }
+.version-history-panel header { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.version-history-panel .link { white-space: normal; }
+.version-history-panel p { margin: 7px 0; font-size: .83rem; }
+.history-note { color: var(--muted); line-height: 1.5; }
+.version-history-list { list-style: none; padding: 0; margin: 8px 0; max-height: 15rem; overflow: auto; }
+.version-history-list li { display: flex; gap: 8px; align-items: center; justify-content: space-between; border-top: 1px solid var(--line); padding: 8px 5px; }
+.version-history-list li.is-selected { border-left: 2px solid var(--accent); }
+.version-history-list strong, .version-history-list small { display: block; font-size: .79rem; }
+.version-history-list small { color: var(--muted); line-height: 1.5; margin-top: 3px; }
+.version-history-list li > span { flex: 0 0 auto; }
+.version-history-details { border-top: 1px solid var(--line-strong); padding-top: 12px; overflow-wrap: anywhere; }
+.version-history-details > strong { font-size: .85rem; }
+.version-history-details dl { display: grid; grid-template-columns: minmax(100px, .7fr) minmax(0, 1.5fr); gap: 6px 12px; font-size: .8rem; }
+.version-history-details dt { color: var(--muted); }
+.version-history-details dd { margin: 0; }
+.version-history-details > .check { margin-top: 4px; padding: 7px 10px; font-size: .82rem; }
+.history-color { display: inline-block; width: 10px; height: 10px; border: 1px solid var(--line-strong); border-radius: 3px; }
+.history-files { display: flex; flex-wrap: wrap; gap: 4px; }
+@media (max-width: 640px) { .version-history-list li { align-items: start; flex-direction: column; } .version-history-panel { width: min(480px, calc(100vw - 64px)); } }

@@ -242,6 +242,9 @@ pub(crate) fn run_watch(
     cancel: &AtomicBool,
 ) -> Result<(), String> {
     let mut job = Job::open(video, output_dir)?;
+    if job.root.join("editing.json").exists() {
+        return Err("Video này đã tách/gộp câu. Mở bản kết quả hoặc Xuất lại để dùng đúng câu đã sửa; Xem trước dịch trực tiếp chỉ dùng mốc gốc.".into());
+    }
     let (target_code, target_name) = clean_target(target);
     job.target = target_code.into();
     let choice = crate::choice_path(app)

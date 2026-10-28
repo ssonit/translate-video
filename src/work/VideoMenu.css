@@ -1,24 +1,36 @@
-.result-video.has-app-menu::-webkit-media-controls-panel {
-  padding-right: 48px;
-}
-
 .video-menu {
   position: absolute;
+  top: 10px;
   right: 10px;
-  bottom: 26px;
   z-index: 3;
   font-size: 0.9rem;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 140ms ease;
+}
+
+.video-surface:hover .video-menu,
+.video-menu:focus-within,
+.video-menu.is-open,
+.video-menu.is-paused {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+@media (hover: none) {
+  .video-menu { opacity: 1; pointer-events: auto; }
 }
 
 .video-menu-trigger {
-  width: 36px;
-  height: 36px;
+  width: 32px;
+  height: 32px;
   padding: 0;
-  border: 1px solid var(--line-strong);
-  border-radius: 50%;
-  background: var(--inset);
-  color: var(--text);
-  font-size: 1.6rem;
+  border: 1px solid #ffffff40;
+  border-radius: 8px;
+  background: #151412b8;
+  color: #fff;
+  backdrop-filter: blur(8px);
+  font-size: 1.35rem;
   line-height: 1;
 }
 
@@ -31,9 +43,12 @@
 .video-menu-popup {
   position: absolute;
   right: 0;
-  bottom: calc(100% + 8px);
+  top: calc(100% + 8px);
   width: 220px;
-  max-width: calc(100vw - 48px);
+  max-width: min(calc(100cqi - 20px), calc(100vw - 48px));
+  max-height: calc(100cqh - 52px);
+  overflow: auto;
+  overscroll-behavior: contain;
   padding: 6px;
   border: 1px solid var(--line-strong);
   border-radius: 12px;
@@ -59,6 +74,36 @@
 
 .video-menu-popup button:disabled {
   opacity: 0.5;
+}
+
+.video-menu-popup > button[aria-haspopup="menu"] {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.video-menu-value { color: var(--muted); white-space: nowrap; }
+.video-menu-value > span { margin-left: 8px; }
+
+.video-menu-popup .video-menu-back {
+  min-height: 36px;
+  padding: 6px 10px 10px;
+  color: var(--muted);
+}
+
+.video-menu-back > span { margin-right: 8px; }
+.video-menu-speeds {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.video-menu-speeds button { min-height: 36px; padding: 6px; text-align: center; }
+.video-menu-speeds button[aria-checked="true"] { background: var(--accent); color: var(--on-accent); }
+
+@media (prefers-reduced-motion: reduce) {
+  .video-menu { transition: none; }
 }
 
 .video-menu-popup p {

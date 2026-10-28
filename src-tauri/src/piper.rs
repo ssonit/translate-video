@@ -376,7 +376,7 @@ fn spawn_reader(
 }
 
 pub(crate) fn locate() -> Option<PathBuf> {
-    let bundled = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../piper");
+    let bundled = crate::runtime_paths::tool_dir("piper");
     if let Some(exe) = piper_exe_in(&bundled) {
         return Some(exe);
     }

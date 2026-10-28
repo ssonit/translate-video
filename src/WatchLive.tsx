@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { markVideoShape } from "./work/videoShape";
 import {
   advanceClock,
   audioMove,
@@ -309,6 +310,8 @@ export default function WatchLive({ update, listen, onStop, onExport }: Props) {
               <video
                 ref={bindMedia}
                 className="result-video"
+                onLoadedMetadata={(event) => markVideoShape(event.currentTarget)}
+                onEmptied={(event) => { delete event.currentTarget.dataset.shape; }}
                 controls
                 src={convertFileSrc(update.video)}
                 onTimeUpdate={apply}
@@ -331,6 +334,7 @@ export default function WatchLive({ update, listen, onStop, onExport }: Props) {
           ) : null}
         </div>
       )}
+      <p className="preview-hint">{listen ? "Bản nghe trước chưa qua kiểm tra tên và thuật ngữ." : update.textOnly ? "Bản xem trước chưa áp dụng sửa tên và thuật ngữ như khi xuất phụ đề." : "Bản xem trước chưa áp dụng sửa tên, thuật ngữ và co độ dài; bản xuất sẽ căn lại giọng đọc."}</p>
       <audio ref={audioRef} />
       <ol className="live-lines" ref={listRef}>
         {update.lines.map((line, index) => {

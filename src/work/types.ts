@@ -30,7 +30,10 @@ export type DubStatus = {
   audioOnly?: boolean;
   textOnly?: boolean;
   names?: NamesPending | null;
+  pause?: RunPause;
 };
+
+export type RunPause = { pausedMs: number; sinceMs: number | null };
 
 export type NameFix = { from: string; to: string };
 
@@ -65,7 +68,17 @@ export type KeptVersion = {
   language: string;
   modifiedMs: number;
   audio: boolean;
+  versionId?: string | null;
+  summary?: string | null;
+  knownConfig?: boolean;
 };
+
+export type VersionConfig = {
+  target: string; voice: string; useTerms: boolean; skipTranslate: boolean; textOnly: boolean; audioOnly: boolean; burnCaptions: boolean;
+  render: import("./renderSettings").RenderSettings; translation: { provider: string; model: string } | null;
+};
+export type VersionDetails = { id: string | null; createdMs: number; reasons: string[]; config: VersionConfig | null; lines: number | null;
+  files: { path: string; kind: "audio" | "video" | "captioned" }[]; note: string };
 
 export type ScriptLine = {
   start: number;
@@ -73,12 +86,28 @@ export type ScriptLine = {
   source: string;
   translation: string;
   fit?: { cut_seconds: number; speed: number | null };
+  missing_audio?: boolean;
+  revision?: string;
+  id?: string;
+  sources?: number[];
+  structure_undo?: boolean;
+  structure_undo_blocked?: boolean;
+  captions?: ("invalid_timing" | "overlap" | "short_duration" | "dense_text")[];
 };
 
 export type LinePick = {
   text: string;
   again: boolean;
+  start?: number;
+  end?: number;
+  revision?: string;
 };
+
+export type LineEdit = { index: number; text: string; start?: number; end?: number; revision?: string; again?: boolean; id?: string };
+export type StructureEdit =
+  | { kind: "split"; revision: string; id: string; at: number; left_source: string; left_text: string; right_source: string; right_text: string }
+  | { kind: "merge"; revision: string; id: string; next_id: string; source: string; text: string }
+  | { kind: "undo"; revision: string };
 
 export type View = "new" | "progress" | "watch" | "live" | "settings" | "resume" | "parts";
 
@@ -92,6 +121,8 @@ export type JobSpec = {
   skipTranslate: boolean;
   burnCaptions: boolean;
   textOnly: boolean;
+  render?: import("./renderSettings").RenderSettings;
+  translation?: import("../queue").TranslationRun;
 };
 
 export type Prefs = {

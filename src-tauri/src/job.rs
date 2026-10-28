@@ -195,7 +195,7 @@ impl Job {
 
 // Giọng đọc của câu thứ `index` (đếm từ 1) trong folder việc `root`.
 fn line_wav_path(root: &Path, index: usize) -> PathBuf {
-    root.join("lines").join(format!("{index:03}.wav"))
+    crate::editing::wav_path(root, index)
 }
 
 // File đốt chữ nằm cạnh video kết quả: `tap.vi.mp4` -> `tap.vi.chu.mp4`.
@@ -243,19 +243,29 @@ pub(crate) struct KeptVersion {
     pub language: String,
     pub modified_ms: u64,
     pub audio: bool,
+    pub version_id: Option<String>,
+    pub summary: Option<String>,
+    pub known_config: bool,
 }
 
 // Chuyển mỗi video hoặc audio đã xuất vào một folder riêng trong cu/. File đang làm ở gốc giữ nguyên.
 pub(crate) fn archive_exports(root: &Path) -> Result<usize, String> {
+    archive_exports_detail(root).map(|slots|slots.len())
+}
+
+pub(crate) fn archive_exports_detail(root: &Path) -> Result<Vec<PathBuf>, String> {
+    crate::history::ensure_previous(root)?;
     let groups = export_groups(root);
     if groups.is_empty() {
-        return Ok(0);
+        return Ok(Vec::new());
     }
     let kept = root.join(KEPT_DIR);
     std::fs::create_dir_all(&kept).map_err(|error| error.to_string())?;
+    let mut slots = Vec::new();
     for group in &groups {
         let slot = next_kept_slot(&kept);
         std::fs::create_dir_all(&slot).map_err(|error| error.to_string())?;
+        slots.push(slot.clone());
         for path in group {
             let name = path
                 .file_name()
@@ -263,7 +273,29 @@ pub(crate) fn archive_exports(root: &Path) -> Result<usize, String> {
             std::fs::rename(path, slot.join(name)).map_err(|error| error.to_string())?;
         }
     }
-    Ok(groups.len())
+    Ok(slots)
+}
+
+// A style change only replaces the burned copy. Keep the uncaptioned video
+// available for reburning, and keep the old captions recoverable in the library.
+pub(crate) fn archive_captioned(job: &Job) -> Result<(), String> {
+    if !file_ready(&job.captioned()) {
+        return Ok(());
+    }
+    crate::history::ensure_previous(&job.root)?;
+    let kept = job.root.join(KEPT_DIR);
+    std::fs::create_dir_all(&kept).map_err(|e| e.to_string())?;
+    let slot = next_kept_slot(&kept);
+    std::fs::create_dir_all(&slot).map_err(|e| e.to_string())?;
+    for path in [job.subtitles(), job.root.join("render.json")] {
+        if path.is_file() {
+            std::fs::copy(&path, slot.join(path.file_name().ok_or("Không đọc được tên file phụ đề.")?))
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    let captioned = job.captioned();
+    std::fs::rename(&captioned, slot.join(captioned.file_name().ok_or("Không đọc được tên video có chữ.")?))
+        .map_err(|e| e.to_string())
 }
 
 pub(crate) fn list_kept(root: &Path) -> Result<Vec<KeptVersion>, String> {
@@ -301,8 +333,12 @@ pub(crate) fn list_kept(root: &Path) -> Result<Vec<KeptVersion>, String> {
             language: result_language(&path),
             modified_ms,
             audio,
+            version_id: None,
+            summary: None,
+            known_config: false,
         });
     }
+    crate::history::enrich(root, &mut found);
     found.sort_by(|left, right| {
         right
             .modified_ms
@@ -895,14 +931,15 @@ pub(crate) fn draft_brief(root: &Path) -> Result<DraftBrief, String> {
     let heard_lines = cues("lines.json")
         .or_else(|| cues("transcript.json"))
         .unwrap_or_default();
-    let done: Vec<TranslatedLine> = read_json(&root.join("translation.json")).unwrap_or_default();
+    let edited = root.join("editing.json").exists();
+    let done: Vec<TranslatedLine> = if edited { crate::timing::read(root)? } else { read_json(&root.join("translation.json")).unwrap_or_default() };
     // Câu đổi chữ bị xóa bản dịch, nên chỉ tính bản dịch còn chữ.
     let translated_text = first_texts(done.iter().map(|line| line.translation.as_str()));
     let translated = done
         .iter()
         .filter(|line| !line.translation.trim().is_empty())
         .count();
-    let heard = heard_lines.len().max(done.len());
+    let heard = if edited { done.len() } else { heard_lines.len().max(done.len()) };
     let spoken = (1..=heard)
         .filter(|index| file_ready(&line_wav_path(root, *index)))
         .count();
@@ -987,7 +1024,11 @@ pub(crate) fn read_script(result: &Path) -> Result<Vec<TranslatedLine>, String> 
     if !file_ready(&path) {
         return Ok(Vec::new());
     }
-    read_json(&path)
+    let mut lines: Vec<TranslatedLine> = read_json(&path)?;
+    if result.extension().is_some_and(|e| e.eq_ignore_ascii_case("mp4")) || dir.join("editing.json").exists() {
+        crate::timing::apply(dir, &mut lines)?;
+    }
+    Ok(lines)
 }
 
 // Nhiều file .m4a thì lấy bản đúng ngôn ngữ đã lưu, rồi tới bản mới hơn.
@@ -1066,7 +1107,7 @@ pub(crate) fn media_language(path: &Path) -> String {
         .file_stem()
         .and_then(|value| value.to_str())
         .unwrap_or("");
-    let stem = raw.strip_suffix(".chu").unwrap_or(raw);
+    let stem = raw.strip_suffix(".chu").or_else(|| is_listen_audio(path).then(|| raw.strip_suffix(".nghe")).flatten()).unwrap_or(raw);
     match stem.rsplit_once('.') {
         Some((_, code)) if code.len() == 2 && code.chars().all(|ch| ch.is_ascii_alphabetic()) => {
             code.to_ascii_lowercase()
