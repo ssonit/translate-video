@@ -300,6 +300,7 @@ export function jobActions(s: Session) {
         burn: spec.burnCaptions,
         skipTranslate: spec.skipTranslate,
         useTerms: spec.translation?.useTerms,
+        translation: spec.translation,
         render: spec.render ?? DEFAULT_RENDER,
       });
     } catch {

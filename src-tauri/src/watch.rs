@@ -242,6 +242,7 @@ pub(crate) fn run_watch(
     cancel: &AtomicBool,
 ) -> Result<(), String> {
     let mut job = Job::open(video, output_dir)?;
+    let draft_source = crate::draft::inspect_source(&job, cancel)?;
     if job.root.join("editing.json").exists() {
         return Err("Video này đã tách/gộp câu. Mở bản kết quả hoặc Xuất lại để dùng đúng câu đã sửa; Xem trước dịch trực tiếp chỉ dùng mốc gốc.".into());
     }
@@ -339,6 +340,7 @@ pub(crate) fn run_watch(
             translated: Vec::new(),
             saved,
         };
+        let fresh_text = state.saved.is_empty();
         if transcript_existed {
             whisper_ok.store(true, Ordering::SeqCst);
             let cues = read_cues(&job.transcript())?;
@@ -379,6 +381,11 @@ pub(crate) fn run_watch(
         }
         publish(&job, &state.lines, &state.translated, text_only)?;
         settle_transcript(&job);
+        if fresh_text {
+            crate::text_cache::record_fresh_preview(&job, draft_source, crate::draft::RunContext {
+                provider: choice.provider.clone(), model: crate::ollama::model_identity(&choice.provider, &choice.model), audio_only: false,
+            }, &state.lines, &state.translated, skip_translate, cancel)?;
+        }
         emit_update(
             app,
             &media,

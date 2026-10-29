@@ -14,6 +14,21 @@ pub(crate) struct EditedCue {
     pub sources: Vec<usize>,
     pub slot: usize,
     pub line: TranslatedLine,
+    #[serde(default = "legacy_authored")]
+    pub authored: bool,
+    #[serde(default)]
+    pub keep_speech: bool,
+}
+
+fn legacy_authored() -> bool { true }
+
+#[derive(Clone, Serialize, Deserialize)]
+struct DraftUndo {
+    cues: Vec<EditedCue>,
+    history: Vec<Change>,
+    generation_basis: Option<String>,
+    #[serde(default)]
+    after: Option<Vec<EditedCue>>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -45,6 +60,10 @@ pub(crate) struct Editing {
     next: usize,
     pub cues: Vec<EditedCue>,
     history: Vec<Change>,
+    #[serde(default)]
+    word_history: Vec<DraftUndo>,
+    #[serde(default)]
+    pub generation_basis: Option<String>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -112,6 +131,7 @@ impl Editing {
             || self.cues.is_empty()
             || self.cues.len() > 10000
             || self.history.len() > 20
+            || self.word_history.len() > 20
         {
             return Err("Cấu trúc câu đã sửa không khớp bản dịch gốc hoặc phiên bản không hỗ trợ. Không tự ghép nhầm tiếng.".into());
         }
@@ -187,6 +207,7 @@ impl Editing {
                 }
             }
         }
+        let authored = crate::text_cache::authored_flags(root, base)?;
         Ok(Self {
             version: 1,
             basis: basis(base)?,
@@ -199,15 +220,37 @@ impl Editing {
                     sources: vec![i],
                     slot: i + 1,
                     line: l.clone(),
+                    authored: authored.get(i).copied().unwrap_or(false),
+                    keep_speech: false,
                 })
                 .collect(),
             history: Vec::new(),
+            word_history: Vec::new(),
+            generation_basis: crate::text_cache::generation_basis(root)?,
         })
     }
 
     pub(crate) fn lines(&self) -> Vec<TranslatedLine> {
         self.cues.iter().map(|c| c.line.clone()).collect()
     }
+
+    pub(crate) fn remember_draft(&mut self) {
+        self.word_history.push(DraftUndo { cues: self.cues.clone(), history: self.history.clone(), generation_basis: self.generation_basis.clone(), after: None });
+        if self.word_history.len() > 20 { self.word_history.remove(0); }
+    }
+
+    pub(crate) fn undo_draft(&mut self) -> Result<(), String> {
+        if !self.can_undo_draft() { return Err("Nháp đã có thay đổi tiếp theo; không ghi đè để hoàn tác.".into()); }
+        let old = self.word_history.pop().ok_or("Chưa có thay đổi nháp để hoàn tác.")?;
+        self.cues = old.cues;
+        self.history = old.history;
+        self.generation_basis = old.generation_basis;
+        Ok(())
+    }
+
+    pub(crate) fn can_undo_draft(&self) -> bool { self.word_history.last().is_some_and(|old|old.after.as_ref()==Some(&self.cues)) }
+
+    pub(crate) fn clear_draft_history(&mut self) { self.word_history.clear(); self.history.clear(); }
     pub(crate) fn can_undo(&self) -> bool {
         self.history.last().is_some_and(|change| {
             self.cues
@@ -232,7 +275,9 @@ impl Editing {
     pub(crate) fn save(&self, root: &Path) -> Result<(), String> {
         let base: Vec<TranslatedLine> = read_json(&root.join("translation.json"))?;
         self.validate(&base)?;
-        write_json(&root.join("editing.json"), self)?;
+        let mut next = self.clone();
+        if let Some(last)=next.word_history.last_mut().filter(|last|last.after.is_none()) {last.after=Some(next.cues.clone());}
+        write_json(&root.join("editing.json"), &next)?;
         invalidate(root);
         Ok(())
     }
@@ -252,11 +297,14 @@ impl Editing {
         }
         let slot = self.next;
         self.next = self.next.checked_add(1).ok_or("Hết số file tiếng.")?;
+        let authored=!line.translation.trim().is_empty();
         Ok(EditedCue {
             id: format!("edit-{slot}"),
             sources,
             slot,
             line,
+            authored,
+            keep_speech: false,
         })
     }
 
@@ -275,6 +323,10 @@ impl Editing {
                 return Err("Mỗi phần cần có lời gốc và lời đọc, tối đa 4.000 ký tự.".into());
             }
             Ok(text.to_string())
+        };
+        let clean_read = |s: &str| -> Result<String,String> {
+            if s.trim().chars().count()>4000 {return Err("Lời đọc mỗi phần tối đa 4.000 ký tự.".into());}
+            Ok(s.trim().into())
         };
         let (index, before, after) = match action {
             Structure::Split {
@@ -311,7 +363,7 @@ impl Editing {
                         start: cue.line.start,
                         end: *at,
                         source: clean(left_source)?,
-                        translation: clean(left_text)?,
+                        translation: clean_read(left_text)?,
                     },
                 )?;
                 let right = self.allocate(
@@ -321,7 +373,7 @@ impl Editing {
                         start: *at,
                         end: cue.line.end,
                         source: clean(right_source)?,
-                        translation: clean(right_text)?,
+                        translation: clean_read(right_text)?,
                     },
                 )?;
                 (index, vec![cue], vec![left, right])
@@ -362,7 +414,7 @@ impl Editing {
                         start: left.line.start,
                         end: right.line.end,
                         source: clean(source)?,
-                        translation: clean(text)?,
+                        translation: clean_read(text)?,
                     },
                 )?;
                 (index, vec![left, right], vec![merged])

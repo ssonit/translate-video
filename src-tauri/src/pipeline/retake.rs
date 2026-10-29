@@ -42,6 +42,8 @@ struct UndoNote {
     editing_existed: Option<bool>,
     #[serde(default)]
     history_new: Option<String>,
+    #[serde(default)]
+    text_cache_existed: Option<bool>,
 }
 
 fn undo_dir(root: &Path) -> PathBuf {
@@ -169,6 +171,15 @@ pub(crate) fn restore_retake(root: &Path) -> Result<(), String> {
     let saved = undo.join("translation.json");
     if file_ready(&saved) {
         copy_file(&saved, &root.join("translation.json"))?;
+    }
+    match note.text_cache_existed {
+        Some(true) => copy_file(&undo.join("translation-cache.json"), &root.join("translation-cache.json"))?,
+        Some(false) => match std::fs::remove_file(root.join("translation-cache.json")) {
+            Ok(()) => {},
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {},
+            Err(e) => return Err(e.to_string()),
+        },
+        None => {},
     }
     match note.timing_existed {
         Some(true) => copy_file(&undo.join("timing.json"), &root.join("timing.json"))?,
@@ -350,6 +361,10 @@ fn begin_edit(
     let mut missing_wavs = Vec::new();
     std::fs::create_dir_all(undo.join("wav")).map_err(|error| error.to_string())?;
     copy_file(&job.translation_path(), &undo.join("translation.json"))?;
+    let text_cache_existed = Some(job.root.join("translation-cache.json").is_file());
+    if text_cache_existed == Some(true) {
+        copy_file(&job.root.join("translation-cache.json"), &undo.join("translation-cache.json"))?;
+    }
     let timing_existed = Some(job.root.join("timing.json").is_file());
     if timing_existed == Some(true) {
         copy_file(&job.root.join("timing.json"), &undo.join("timing.json"))?;
@@ -435,6 +450,7 @@ fn begin_edit(
         missing_outputs: missing_outputs.clone(),
         editing_existed,
         history_new: Some(crate::history::new_id()),
+        text_cache_existed,
     };
     write_json(&undo.join("manifest.json"), &note)?;
     let staged = (|| {
@@ -460,6 +476,7 @@ fn begin_edit(
                     missing_outputs: missing_outputs.clone(),
                     editing_existed,
                     history_new: note.history_new.clone(),
+                    text_cache_existed,
                 },
             )?;
             park_file(&path, &undo, &mut Vec::new())?;
@@ -471,6 +488,7 @@ fn begin_edit(
             doc.save(&job.root)?;
         } else if words_changed {
             write_json(&job.translation_path(), &saved)?;
+            crate::text_cache::accept_words(&job.root, &saved)?;
         }
         for slot in &reread {
             let wav = job.root.join("lines").join(format!("{slot:03}.wav"));
@@ -647,6 +665,9 @@ fn revise_with(
         } else {
             crate::timing::read(&job.root)?
         };
+        if lines.iter().any(|line|!line.source.trim().is_empty()&&line.translation.trim().is_empty()) {
+            return Err("Còn câu chưa có lời đọc. Lưu và hoàn tất bản nháp trước khi xuất.".into());
+        }
         match retake_path(text_only) {
             RetakePath::Burn => {
                 report(app, "speak", "skipped", "Không đọc giọng.");
@@ -968,6 +989,8 @@ mod tests {
         std::fs::write(job.dub(), b"mix").unwrap();
         std::fs::write(job.captioned(), b"chu").unwrap();
         std::fs::write(root.join("history-current.json"), b"previous marker").unwrap();
+        let receipt = serde_json::json!({"version":1,"guard":"fixture","basis":"fixture","outputs":[]});
+        write_json(&root.join("translation-cache.json"), &receipt).unwrap();
 
         let count = begin_retake(
             &job,
@@ -981,6 +1004,8 @@ mod tests {
         .unwrap();
         assert_eq!(count, (1, 1));
         let note: UndoNote = read_json(&undo_dir(&root).join("manifest.json")).unwrap();
+        assert_eq!(note.text_cache_existed, Some(true));
+        std::fs::write(root.join("translation-cache.json"), b"uncommitted receipt").unwrap();
         let history = root.join("cu").join(format!("ban-{}", note.history_new.as_ref().unwrap()));
         std::fs::create_dir_all(&history).unwrap();
         std::fs::write(history.join("clip.vi.mp4"), b"uncommitted version").unwrap();
@@ -1002,6 +1027,7 @@ mod tests {
 
         restore_retake(&root).unwrap();
         let restored: Vec<TranslatedLine> = read_json(&job.translation_path()).unwrap();
+        assert_eq!(read_json::<serde_json::Value>(&root.join("translation-cache.json")).unwrap(), receipt);
         assert_eq!(restored, original);
         assert_eq!(std::fs::read(job.line_wav(2)).unwrap(), b"wav2");
         assert_eq!(std::fs::read(job.result()).unwrap(), b"video");

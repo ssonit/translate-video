@@ -5,6 +5,10 @@ mod render;
 mod deepseek_server;
 mod fit_report;
 mod job;
+mod atomic_file;
+mod draft;
+mod text_cache;
+mod coordinator;
 mod listen;
 mod names;
 mod ollama;
@@ -981,17 +985,30 @@ fn run_checks(choice: &TranslationChoice, skip_translate: bool) -> Vec<ToolCheck
 }
 
 #[tauri::command]
-async fn check_setup(app: tauri::AppHandle) -> Vec<ToolCheck> {
+async fn check_setup(app: tauri::AppHandle, options: Option<pipeline::demand::Options>) -> Vec<ToolCheck> {
     tauri::async_runtime::spawn_blocking(move || {
-        let choice = choice_path(&app)
+        let mut choice = choice_path(&app)
             .ok()
             .map(|path| read_choice(&path))
             .unwrap_or_default();
-        let skip_translate = prefs_path(&app)
+        let mut skip_translate = prefs_path(&app)
             .ok()
             .map(|path| read_prefs(&path).skip_translate)
             .unwrap_or(false);
-        run_checks(&choice, skip_translate)
+        if let Some(config) = &options {
+            choice = TranslationRun {provider:config.provider.clone(),model:config.model.clone(),use_terms:config.use_terms}.resolve(choice)
+                .unwrap_or_else(|_|TranslationChoice {provider:config.provider.clone(),model:config.model.clone(),..Default::default()});
+            skip_translate = config.skip_translate;
+        }
+        let mut checks=run_checks(&choice, skip_translate);
+        if let Some(config)=options {
+            if let Some(voice)=checks.iter_mut().find(|c|c.id=="voice") {
+                let names=bundled_voice_dir(&config.target).map(|dir|voice_names(&dir)).unwrap_or_default();
+                voice.ready=config.text_only || (!names.is_empty() && (config.voice.is_empty() || names.contains(&config.voice)));
+                voice.detail=if config.text_only {"Video phụ đề không cần giọng đọc.".into()}else if voice.ready {format!("Đã có giọng trong voices/{}.",config.target)}else{format!("Thiếu giọng đã chọn trong voices/{}.",config.target)};
+            }
+        }
+        checks
     })
     .await
     .unwrap_or_default()
@@ -1038,14 +1055,17 @@ fn save_translation_model(app: tauri::AppHandle, model: String) -> Result<(), St
 }
 
 struct DubControl {
-    cancel: AtomicBool,
-    running: AtomicBool,
-    captioning: AtomicBool,
+    tasks: coordinator::Coordinator,
     snapshot: std::sync::Mutex<DubSnapshot>,
     // File đang đốt chữ, để lệnh xóa không gỡ đúng folder đó.
     caption_path: std::sync::Mutex<String>,
     // Cửa sổ gửi danh sách tên vào đây khi pipeline đang chờ.
     names_reply: std::sync::Mutex<Option<std::sync::mpsc::Sender<names::NameDecision>>>,
+}
+
+impl std::ops::Deref for DubControl {
+    type Target = coordinator::Coordinator;
+    fn deref(&self) -> &Self::Target { &self.tasks }
 }
 
 // Where the current (or last) run stands, so a reloaded window can draw it again.
@@ -1175,7 +1195,7 @@ fn now_ms() -> u64 {
 }
 
 // Records how a run ended and tells the window, which may have been reloaded and lost the pending call.
-fn finish_dub(app: &tauri::AppHandle, control: &DubControl, outcome: &Result<String, String>) {
+fn finish_dub(app: &tauri::AppHandle, control: &DubControl, outcome: &Result<String, String>, lease: &mut coordinator::Lease<'_>) {
     let _ = control.take_name_reply();
     control.update(|snap| {
         snap.running = false;
@@ -1186,12 +1206,19 @@ fn finish_dub(app: &tauri::AppHandle, control: &DubControl, outcome: &Result<Str
             Err(message) => snap.error = Some(message.clone()),
         }
     });
-    let _ = app.emit("dub-finished", control.read());
+    let snapshot = control.read();
+    lease.release();
+    let _ = app.emit("dub-finished", snapshot);
 }
 
 #[tauri::command]
 fn dub_status(app: tauri::AppHandle) -> DubSnapshot {
     app.state::<DubControl>().read()
+}
+
+#[tauri::command]
+fn task_state(app: tauri::AppHandle) -> Option<coordinator::Status> {
+    app.state::<DubControl>().tasks.status()
 }
 
 #[tauri::command]
@@ -1214,18 +1241,8 @@ async fn start_dub(
     let text_only = text_only.unwrap_or(false);
     tauri::async_runtime::spawn_blocking(move || {
         let control = app.state::<DubControl>();
-        if control.captioning.load(Ordering::SeqCst) {
-            return Err("Đang ghi chữ vào video.".into());
-        }
-        if control.running.swap(true, Ordering::SeqCst) {
-            return Err("Đang lồng một video.".into());
-        }
-        if control.captioning.load(Ordering::SeqCst) {
-            control.running.store(false, Ordering::SeqCst);
-            return Err("Đang ghi chữ vào video.".into());
-        }
+        let mut lease = control.tasks.acquire(coordinator::Kind::FullRun)?;
         let _ = control.take_name_reply();
-        control.cancel.store(false, Ordering::SeqCst);
         control.update(|snap| {
             *snap = DubSnapshot {
                 running: true,
@@ -1279,12 +1296,11 @@ async fn start_dub(
                 &control.cancel,
             )
         }));
-        control.running.store(false, Ordering::SeqCst);
         let outcome = match result {
             Ok(value) => value,
             Err(_) => Err("Không chạy được pipeline.".into()),
         };
-        finish_dub(&app, &control, &outcome);
+        finish_dub(&app, &control, &outcome, &mut lease);
         outcome
     })
     .await
@@ -1308,18 +1324,8 @@ async fn start_again(
     let text_only = text_only.unwrap_or(false);
     tauri::async_runtime::spawn_blocking(move || {
         let control = app.state::<DubControl>();
-        if control.captioning.load(Ordering::SeqCst) {
-            return Err("Đang ghi chữ vào video.".into());
-        }
-        if control.running.swap(true, Ordering::SeqCst) {
-            return Err("Đang lồng một video.".into());
-        }
-        if control.captioning.load(Ordering::SeqCst) {
-            control.running.store(false, Ordering::SeqCst);
-            return Err("Đang ghi chữ vào video.".into());
-        }
+        let mut lease = control.tasks.acquire(coordinator::Kind::FullRun)?;
         let _ = control.take_name_reply();
-        control.cancel.store(false, Ordering::SeqCst);
         control.update(|snap| {
             *snap = DubSnapshot {
                 running: true,
@@ -1388,12 +1394,11 @@ async fn start_again(
                 &control.cancel,
             )
         }));
-        control.running.store(false, Ordering::SeqCst);
         let outcome = match result {
             Ok(value) => value,
             Err(_) => Err("Không chạy được pipeline.".into()),
         };
-        finish_dub(&app, &control, &outcome);
+        finish_dub(&app, &control, &outcome, &mut lease);
         outcome
     })
     .await
@@ -1464,6 +1469,7 @@ async fn finished_result(
     burn: Option<bool>,
     skip_translate: Option<bool>,
     use_terms: Option<bool>,
+    translation: Option<TranslationRun>,
     render: Option<render::RenderSettings>,
 ) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -1478,6 +1484,10 @@ async fn finished_result(
             skip_translate: skip_translate.unwrap_or(prefs.skip_translate),
             text_only: text_only.unwrap_or(false),
         };
+        let choice = if settings.skip_translate { None } else {
+            let current = read_choice(&choice_path(&app)?);
+            Some(match translation { Some(config) => config.resolve(current)?, None => current })
+        };
         let result = pipeline::matching_result(
             Path::new(&video),
             Path::new(&output_dir),
@@ -1487,6 +1497,13 @@ async fn finished_result(
         );
         Ok(result
             .filter(|path| {
+                if !settings.skip_translate {
+                    let root = Path::new(path).parent().unwrap_or(Path::new("."));
+                    let Some(choice) = &choice else { return false };
+                    let model = ollama::model_identity(&choice.provider, &choice.model);
+                    if !draft::matches_text_context(root, &choice.provider, &model).unwrap_or(false)
+                        || !text_cache::can_reuse_output(root).unwrap_or(false) { return false; }
+                }
                 render::RenderSettings::read(Path::new(path).parent().unwrap_or(Path::new("."))).is_ok_and(|saved| saved.matches_output(&render.clone().unwrap_or_default(),audio_only.unwrap_or(false),settings.text_only,&settings.target))
                     && pipeline::media_duration(Path::new(path), &AtomicBool::new(false)).is_ok()
             })
@@ -1509,17 +1526,7 @@ async fn start_watch(
     let text_only = text_only.unwrap_or(false);
     tauri::async_runtime::spawn_blocking(move || {
         let control = app.state::<DubControl>();
-        if control.captioning.load(Ordering::SeqCst) {
-            return Err("Đang ghi chữ vào video.".into());
-        }
-        if control.running.swap(true, Ordering::SeqCst) {
-            return Err("Đang lồng một video.".into());
-        }
-        if control.captioning.load(Ordering::SeqCst) {
-            control.running.store(false, Ordering::SeqCst);
-            return Err("Đang ghi chữ vào video.".into());
-        }
-        control.cancel.store(false, Ordering::SeqCst);
+        let mut lease = control.tasks.acquire(coordinator::Kind::Preview)?;
         control.update(|snap| {
             *snap = DubSnapshot {
                 running: true,
@@ -1548,13 +1555,12 @@ async fn start_watch(
                 &control.cancel,
             )
         }));
-        control.running.store(false, Ordering::SeqCst);
         let outcome = match result {
             Ok(Ok(())) => Ok(String::new()),
             Ok(Err(message)) => Err(message),
             Err(_) => Err("Không chạy được pipeline.".into()),
         };
-        finish_dub(&app, &control, &outcome);
+        finish_dub(&app, &control, &outcome, &mut lease);
         outcome.map(|_| ())
     })
     .await
@@ -1588,17 +1594,7 @@ async fn download_video(
 ) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let control = app.state::<DubControl>();
-        if control.captioning.load(Ordering::SeqCst) {
-            return Err("Đang ghi chữ vào video.".into());
-        }
-        if control.running.swap(true, Ordering::SeqCst) {
-            return Err("Đang lồng một video.".into());
-        }
-        if control.captioning.load(Ordering::SeqCst) {
-            control.running.store(false, Ordering::SeqCst);
-            return Err("Đang ghi chữ vào video.".into());
-        }
-        control.cancel.store(false, Ordering::SeqCst);
+        let mut lease = control.tasks.acquire(coordinator::Kind::Prepare)?;
         control.update(|snap| {
             *snap = DubSnapshot {
                 running: true,
@@ -1611,7 +1607,6 @@ async fn download_video(
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             pipeline::download(&app, &url, Path::new(&output_dir), &control.cancel)
         }));
-        control.running.store(false, Ordering::SeqCst);
         let outcome = match result {
             Ok(value) => value,
             Err(_) => Err("Không tải được video.".into()),
@@ -1623,7 +1618,7 @@ async fn download_video(
                 snap.downloading = false;
                 snap.video = path.clone();
             }),
-            Err(_) => finish_dub(&app, &control, &outcome),
+            Err(_) => finish_dub(&app, &control, &outcome, &mut lease),
         }
         outcome
     })
@@ -1640,17 +1635,7 @@ async fn prepare_listen(
 ) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let control = app.state::<DubControl>();
-        if control.captioning.load(Ordering::SeqCst) {
-            return Err("Đang ghi chữ vào video.".into());
-        }
-        if control.running.swap(true, Ordering::SeqCst) {
-            return Err("Đang lồng một video.".into());
-        }
-        if control.captioning.load(Ordering::SeqCst) {
-            control.running.store(false, Ordering::SeqCst);
-            return Err("Đang ghi chữ vào video.".into());
-        }
-        control.cancel.store(false, Ordering::SeqCst);
+        let mut lease = control.tasks.acquire(coordinator::Kind::Prepare)?;
         control.update(|snap| {
             *snap = DubSnapshot {
                 running: true,
@@ -1664,7 +1649,6 @@ async fn prepare_listen(
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             pipeline::prepare_listen(&app, &url, Path::new(&output_dir), &control.cancel)
         }));
-        control.running.store(false, Ordering::SeqCst);
         let outcome = match result {
             Ok(value) => value,
             Err(_) => Err("Không lấy được phụ đề hoặc tiếng.".into()),
@@ -1676,7 +1660,7 @@ async fn prepare_listen(
                 snap.video = path.clone();
                 snap.audio_only = true;
             }),
-            Err(_) => finish_dub(&app, &control, &outcome),
+            Err(_) => finish_dub(&app, &control, &outcome, &mut lease),
         }
         outcome
     })
@@ -1763,6 +1747,8 @@ async fn translate_listen_part(
         if !outline.text.is_empty() {
             return Ok(outline.text);
         }
+        let control = app.state::<DubControl>();
+        let _lease = control.tasks.acquire(coordinator::Kind::Prepare)?;
         let choice = choice_path(&app)
             .ok()
             .map(|path| read_choice(&path))
@@ -1775,8 +1761,8 @@ async fn translate_listen_part(
             String::new()
         };
         let prompt = ollama::prose_prompt(&outline.source, target_name, &prev);
-        let cancel = AtomicBool::new(false);
-        let text = ollama::complete_plain(&choice, &prompt, &cancel)?;
+        let text = ollama::complete_plain(&choice, &prompt, &control.cancel)?;
+        pipeline::stopped(&control.cancel)?;
         listen::store_part(
             &preview_dir(&root, &target),
             outline.index,
@@ -1798,17 +1784,7 @@ async fn download_saved_video(
 ) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let control = app.state::<DubControl>();
-        if control.captioning.load(Ordering::SeqCst) {
-            return Err("Đang ghi chữ vào video.".into());
-        }
-        if control.running.swap(true, Ordering::SeqCst) {
-            return Err("Đang lồng một video.".into());
-        }
-        if control.captioning.load(Ordering::SeqCst) {
-            control.running.store(false, Ordering::SeqCst);
-            return Err("Đang ghi chữ vào video.".into());
-        }
-        control.cancel.store(false, Ordering::SeqCst);
+        let mut lease = control.tasks.acquire(coordinator::Kind::Prepare)?;
         control.update(|snap| {
             *snap = DubSnapshot {
                 running: true,
@@ -1822,7 +1798,6 @@ async fn download_saved_video(
         let fetched = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             pipeline::attach_video(&app, &result_path, Path::new(&output_dir), &control.cancel)
         }));
-        control.running.store(false, Ordering::SeqCst);
         let outcome = match fetched {
             Ok(value) => value,
             Err(_) => Err("Không tải được video.".into()),
@@ -1833,7 +1808,7 @@ async fn download_saved_video(
                 snap.downloading = false;
                 snap.video = path.clone();
             }),
-            Err(_) => finish_dub(&app, &control, &outcome),
+            Err(_) => finish_dub(&app, &control, &outcome, &mut lease),
         }
         outcome
     })
@@ -1880,22 +1855,11 @@ fn allow_result(app: tauri::AppHandle, path: String) -> Result<(), String> {
 async fn join_listen(app: tauri::AppHandle, path: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let control = app.state::<DubControl>();
-        if control.captioning.load(Ordering::SeqCst) {
-            return Err("Đang ghi chữ vào video.".into());
-        }
-        if control.running.swap(true, Ordering::SeqCst) {
-            return Err("Đang lồng một video.".into());
-        }
-        if control.captioning.load(Ordering::SeqCst) {
-            control.running.store(false, Ordering::SeqCst);
-            return Err("Đang ghi chữ vào video.".into());
-        }
-        control.cancel.store(false, Ordering::SeqCst);
+        let _lease = control.tasks.acquire(coordinator::Kind::Export)?;
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let file = result_path(&path)?;
             pipeline::join_listen(&app, &file, &control.cancel)
         }));
-        control.running.store(false, Ordering::SeqCst);
         match result {
             Ok(value) => value,
             Err(_) => Err("Không nối được các câu.".into()),
@@ -1996,18 +1960,8 @@ async fn revise_lines(
 ) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let control = app.state::<DubControl>();
-        if control.captioning.load(Ordering::SeqCst) {
-            return Err("Đang ghi chữ vào video.".into());
-        }
-        if control.running.swap(true, Ordering::SeqCst) {
-            return Err("Đang lồng một video.".into());
-        }
-        if control.captioning.load(Ordering::SeqCst) {
-            control.running.store(false, Ordering::SeqCst);
-            return Err("Đang ghi chữ vào video.".into());
-        }
+        let mut lease = control.tasks.acquire(coordinator::Kind::Edit)?;
         let _ = control.take_name_reply();
-        control.cancel.store(false, Ordering::SeqCst);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let file = result_path(&path)?;
             let root = file.parent().ok_or("Chưa thấy folder việc.")?.to_path_buf();
@@ -2035,12 +1989,11 @@ async fn revise_lines(
                 pipeline::restructure(&app, &file, action, &control.cancel)
             } else { pipeline::revise(&app, &file, &edits, &control.cancel) }
         }));
-        control.running.store(false, Ordering::SeqCst);
         let outcome = match result {
             Ok(value) => value,
             Err(_) => Err("Không sửa được bản này.".into()),
         };
-        finish_dub(&app, &control, &outcome);
+        finish_dub(&app, &control, &outcome, &mut lease);
         outcome
     })
     .await
@@ -2058,18 +2011,8 @@ fn name_retake_count(path: String) -> Result<usize, String> {
 async fn retake_saved_names(app: tauri::AppHandle, path: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let control = app.state::<DubControl>();
-        if control.captioning.load(Ordering::SeqCst) {
-            return Err("Đang ghi chữ vào video.".into());
-        }
-        if control.running.swap(true, Ordering::SeqCst) {
-            return Err("Đang lồng một video.".into());
-        }
-        if control.captioning.load(Ordering::SeqCst) {
-            control.running.store(false, Ordering::SeqCst);
-            return Err("Đang ghi chữ vào video.".into());
-        }
+        let mut lease = control.tasks.acquire(coordinator::Kind::Edit)?;
         let _ = control.take_name_reply();
-        control.cancel.store(false, Ordering::SeqCst);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let file = result_path(&path)?;
             let root = file.parent().ok_or("Chưa thấy folder việc.")?.to_path_buf();
@@ -2094,12 +2037,11 @@ async fn retake_saved_names(app: tauri::AppHandle, path: String) -> Result<Strin
             });
             pipeline::retake_saved_names(&app, &file, &control.cancel)
         }));
-        control.running.store(false, Ordering::SeqCst);
         let outcome = match result {
             Ok(value) => value,
             Err(_) => Err("Không sửa được bản này.".into()),
         };
-        finish_dub(&app, &control, &outcome);
+        finish_dub(&app, &control, &outcome, &mut lease);
         outcome
     })
     .await
@@ -2129,10 +2071,11 @@ async fn timeline_data(app: tauri::AppHandle, path: String, waveform: Option<boo
 
 #[tauri::command]
 fn cancel_dub(app: tauri::AppHandle) {
-    app.state::<DubControl>()
-        .cancel
-        .store(true, Ordering::SeqCst);
-    let _ = app.emit("tts-cancel", ());
+    app.state::<DubControl>().tasks.request_cancel(|| {
+        app.state::<tts::Bridge>().cancel();
+        let _ = app.emit("tts-cancel", ());
+        pipeline::report_stopping(&app);
+    });
 }
 
 #[tauri::command]
@@ -2156,6 +2099,15 @@ fn draft_brief(path: String) -> Result<job::DraftBrief, String> {
 }
 
 #[tauri::command]
+async fn draft_state(path: String) -> Result<Option<draft::Status>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = Path::new(&path);
+        if !root.join("source.json").is_file() { return Err("Chưa thấy việc này.".into()); }
+        draft::status(root)
+    }).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 fn read_names(root: String) -> Result<names::NameList, String> {
     let root = PathBuf::from(&root);
     if !root.join("source.json").is_file() && !root.join("lines.json").is_file() {
@@ -2164,8 +2116,109 @@ fn read_names(root: String) -> Result<names::NameList, String> {
     Ok(job::read_json(&root.join("names.json")).unwrap_or_default())
 }
 
+async fn draft_command<T: Send + 'static>(app: tauri::AppHandle, kind: coordinator::Kind, source: String,
+    work: impl FnOnce(&tauri::AppHandle, &AtomicBool) -> Result<T, String> + Send + 'static) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let control = app.state::<DubControl>();
+        let _lease = control.tasks.acquire(kind)?;
+        control.update(|snap| *snap = DubSnapshot { running: true, video: source, started_ms: now_ms(), ..DubSnapshot::default() });
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(&app, &control.cancel)))
+            .unwrap_or_else(|_| Err("Không thực hiện được tác vụ nháp.".into()));
+        control.update(|snap| { snap.running = false; snap.downloading = false; snap.names = None; if let Err(e) = &result { snap.error = Some(e.clone()); } });
+        result
+    }).await.map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
-fn save_names(root: String, names: Vec<names::NameFix>) -> Result<bool, String> {
+async fn open_draft(app: tauri::AppHandle, source: String, output_dir: String, is_link: bool, options: pipeline::demand::Options) -> Result<pipeline::demand::View, String> {
+    draft_command(app, coordinator::Kind::Prepare, source.clone(), move |app, cancel| {
+        let video = if is_link { pipeline::prepare_source(app, &source, Path::new(&output_dir), options.audio_only, cancel)? } else { source.clone() };
+        let view = pipeline::demand::open(app, Path::new(&video), Path::new(&output_dir), options, cancel)?;
+        if is_link && Path::new(&video).is_file() { job::bind_download_link(Path::new(&view.root), Path::new(&video), &pipeline::video_url(&source)?)?; }
+        Ok(view)
+    }).await
+}
+
+#[tauri::command]
+async fn read_draft(app: tauri::AppHandle, root: String) -> Result<pipeline::demand::View, String> {
+    draft_command(app, coordinator::Kind::Prepare, root.clone(), move |app, cancel| {
+        let job = pipeline::demand::reopen(Path::new(&root))?;
+        draft::inspect_source(&job, cancel)?;
+        pipeline::demand::initialize_legacy_options(app, &job)?;
+        if job.video.is_file() { app.asset_protocol_scope().allow_file(&job.video).map_err(|e| e.to_string())?; }
+        pipeline::demand::view(&job, cancel)
+    }).await
+}
+
+#[tauri::command]
+async fn prepare_draft(app: tauri::AppHandle, root: String) -> Result<pipeline::demand::View, String> {
+    draft_command(app, coordinator::Kind::Prepare, root.clone(), move |app, cancel| pipeline::demand::prepare(app, Path::new(&root), cancel)).await
+}
+
+#[tauri::command]
+async fn save_draft(app: tauri::AppHandle, root: String, revision: String, patches: Vec<pipeline::demand::Patch>) -> Result<pipeline::demand::View, String> {
+    draft_command(app, coordinator::Kind::Edit, root.clone(), move |_, cancel| {
+        let job = pipeline::demand::reopen(Path::new(&root))?;
+        let view = pipeline::demand::view(&job, cancel)?;
+        pipeline::demand::save_patches(&job, &revision, &patches, view.duration)?;
+        pipeline::demand::view(&job, cancel)
+    }).await
+}
+
+#[tauri::command]
+async fn structure_draft(app: tauri::AppHandle, root: String, revision: String, action: Option<editing::Structure>) -> Result<pipeline::demand::View, String> {
+    draft_command(app, coordinator::Kind::Edit, root.clone(), move |_, cancel| {
+        let job = pipeline::demand::reopen(Path::new(&root))?;
+        let view = pipeline::demand::view(&job, cancel)?;
+        pipeline::demand::restructure(&job, &revision, action.as_ref(), view.duration)?;
+        pipeline::demand::view(&job, cancel)
+    }).await
+}
+
+#[tauri::command]
+async fn configure_draft(app: tauri::AppHandle, root: String, revision: String, options: pipeline::demand::Options) -> Result<pipeline::demand::View, String> {
+    draft_command(app, coordinator::Kind::Edit, root.clone(), move |app, cancel| {
+        let job = pipeline::demand::reopen(Path::new(&root))?;
+        let mut options=options;
+        if !options.text_only && options.voice.is_empty() {options.voice=selected_voice(app,&options.target)?;}
+        pipeline::demand::configure(&job, &revision, options)?;
+        pipeline::demand::view(&pipeline::demand::reopen(&job.root)?, cancel)
+    }).await
+}
+
+#[tauri::command]
+fn set_draft_region(intent: Option<pipeline::demand::Intent>,owner:String) -> Result<(),String> { pipeline::demand::client_intent(intent,&owner) }
+
+#[tauri::command]
+fn cancel_draft_region(app:tauri::AppHandle,root:String,serial:String){
+    app.state::<DubControl>().tasks.request_cancel_if(|kind|kind==coordinator::Kind::Preview&&pipeline::demand::active_region(&root,&serial),||{
+        app.state::<tts::Bridge>().cancel();let _=app.emit("tts-cancel",());pipeline::report_stopping(&app);
+    });
+}
+
+#[tauri::command]
+async fn prepare_draft_region(app:tauri::AppHandle,root:String,serial:String)->Result<pipeline::demand::Region,String>{
+    draft_command(app,coordinator::Kind::Preview,root.clone(),move |app,cancel| pipeline::demand::region(app,Path::new(&root),&serial,cancel)).await
+}
+
+#[tauri::command]
+async fn export_draft(app:tauri::AppHandle,root:String)->Result<String,String>{
+    draft_command(app,coordinator::Kind::Export,root.clone(),move|app,cancel|pipeline::demand::export(app,Path::new(&root),cancel)).await
+}
+
+#[tauri::command]
+async fn sample_draft(app:tauri::AppHandle,root:String,start:f64,seconds:f64)->Result<String,String>{
+    draft_command(app,coordinator::Kind::Auxiliary,root.clone(),move|app,cancel|pipeline::demand::sample(app,Path::new(&root),start,seconds,cancel)).await
+}
+
+#[tauri::command]
+fn save_names(app: tauri::AppHandle, root: String, names: Vec<names::NameFix>) -> Result<bool, String> {
+    let control = app.state::<DubControl>();
+    let _lease = control.tasks.acquire(coordinator::Kind::Edit)?;
+    save_names_at(root, names)
+}
+
+fn save_names_at(root: String, names: Vec<names::NameFix>) -> Result<bool, String> {
     let job = job::Job::reopen(Path::new(&root))?;
     let before: names::NameList = job::read_json(&job.names_path()).unwrap_or_default();
     let cleaned = names::usable_names(&names);
@@ -2185,23 +2238,12 @@ fn save_names(root: String, names: Vec<names::NameFix>) -> Result<bool, String> 
 async fn burn_captions(app: tauri::AppHandle, path: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let control = app.state::<DubControl>();
-        if control.running.load(Ordering::SeqCst) {
-            return Err("Đang lồng một video.".into());
-        }
-        if control.captioning.swap(true, Ordering::SeqCst) {
-            return Err("Đang ghi chữ vào video.".into());
-        }
-        if control.running.load(Ordering::SeqCst) {
-            control.captioning.store(false, Ordering::SeqCst);
-            return Err("Đang lồng một video.".into());
-        }
-        control.cancel.store(false, Ordering::SeqCst);
+        let _lease = control.tasks.acquire(coordinator::Kind::Auxiliary)?;
         control.set_caption_path(&path);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             pipeline::burn_saved(&app, Path::new(&path), &control.cancel)
         }));
         control.set_caption_path("");
-        control.captioning.store(false, Ordering::SeqCst);
         match result {
             Ok(value) => value,
             Err(_) => Err("Không ghi được chữ vào video.".into()),
@@ -2221,11 +2263,7 @@ fn open_tools_folder(app:tauri::AppHandle)->Result<(),String>{
 async fn render_sample(app:tauri::AppHandle,video:String,output_dir:String,target:String,start:f64,seconds:f64,text_only:bool,burn:bool,voice:Option<String>,skip_translate:Option<bool>,use_terms:Option<bool>,render:render::RenderSettings)->Result<String,String>{
     tauri::async_runtime::spawn_blocking(move||{
         let control=app.state::<DubControl>();
-        if control.running.load(Ordering::SeqCst)||control.captioning.swap(true,Ordering::SeqCst){return Err("Đang xử lý một video khác.".into());}
-        struct Guard<'a>(&'a AtomicBool);impl Drop for Guard<'_>{fn drop(&mut self){self.0.store(false,Ordering::SeqCst);}}
-        let _guard=Guard(&control.captioning);
-        if control.running.load(Ordering::SeqCst){return Err("Đang lồng một video.".into());}
-        control.cancel.store(false,Ordering::SeqCst);
+        let _lease=control.tasks.acquire(coordinator::Kind::Auxiliary)?;
         let mut job=job::Job::open(Path::new(&video),Path::new(&output_dir))?;
         job.target=pipeline::clean_target(&target).0.into();
         let settings:pipeline::RunSettings=job::read_json(&job.settings_path()).map_err(|_|"Chạy video trước để chuẩn bị lời và tiếng.".to_string())?;
@@ -2255,9 +2293,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {runtime_paths::initialize(app.handle());Ok(())})
         .manage(DubControl {
-            cancel: AtomicBool::new(false),
-            running: AtomicBool::new(false),
-            captioning: AtomicBool::new(false),
+            tasks: coordinator::Coordinator::default(),
             snapshot: Default::default(),
             caption_path: std::sync::Mutex::new(String::new()),
             names_reply: std::sync::Mutex::new(None),
@@ -2286,6 +2322,7 @@ pub fn run() {
             cancel_dub,
             burn_captions,
             dub_status,
+            task_state,
             allow_result,
             allow_video_preview,
             render_sample,
@@ -2303,6 +2340,11 @@ pub fn run() {
             select_version,
             version_config,
             draft_brief,
+            draft_state,
+            open_draft, read_draft, prepare_draft, save_draft, structure_draft, configure_draft,
+            set_draft_region, prepare_draft_region, export_draft,
+            cancel_draft_region,
+            sample_draft,
             delete_kept_version,
             finished_result,
             delete_dub,
@@ -2740,7 +2782,7 @@ mod tests {
             br#"[{"start":0,"end":1,"source":"Ann","translation":"An"}]"#,
         )
         .unwrap();
-        let changed = save_names(
+        let changed = save_names_at(
             root.to_string_lossy().into_owned(),
             vec![names::NameFix {
                 from: "Ann".into(),

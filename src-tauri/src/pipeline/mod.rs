@@ -1,4 +1,5 @@
 mod sample;
+pub(crate) mod demand;
 pub(crate) use sample::export as export_sample;
 mod assemble;
 mod captions;
@@ -6,12 +7,16 @@ pub(crate) use captions::review as review_captions;
 mod download;
 mod fit_batch;
 mod media;
+mod overlap;
 mod retake;
+mod source_captions;
+mod speech_plan;
 mod speak;
 mod translate;
+mod video_encode;
 
 pub(crate) use assemble::{burn_saved, join_listen, save_spoken, save_video, script_for};
-pub(crate) use download::{attach_video, download, link_title, prepare_listen, DownloadEvent};
+pub(crate) use download::{attach_video, download, link_title, prepare_listen, prepare_source, video_url, DownloadEvent};
 pub(crate) use media::{
     detect_fast_path, extract, launch_for, media_duration, parse_clock, read_cues, reclaim_output,
     run_tool_with, settle_transcript, write_silence,
@@ -73,7 +78,7 @@ pub(crate) fn matching_result(
     burn: bool,
 ) -> Option<String> {
     let found = PathBuf::from(crate::job::finished_result(video, output, now.text_only)?);
-    let root = found.parent()?;
+    let root = found.parent()?.to_path_buf();
     let before: RunSettings = crate::job::read_json(&root.join("settings.json")).ok()?;
     if before.target != now.target
         || before.use_terms != now.use_terms
@@ -101,6 +106,11 @@ pub(crate) fn matching_result(
     }
     if crate::job::media_language(&result) != now.target || !crate::job::file_ready(&result) {
         return None;
+    }
+    if root.join("draft.json").exists() {
+        let saved = Job::reopen(&root).ok()?;
+        crate::draft::inspect_source(&saved, &AtomicBool::new(false)).ok()?;
+        if !crate::draft::matches_voice(&root, &AtomicBool::new(false)).ok()? { return None; }
     }
     Some(result.to_string_lossy().into_owned())
 }
@@ -155,9 +165,9 @@ fn drop_stale(job: &Job, now: &RunSettings) {
             }
         }
         if text_changed {
+            if !job.root.join("editing.json").exists() { remove(job.translation_path()); }
             for path in [
                 job.terms_path(),
-                job.translation_path(),
                 job.subtitles(),
                 job.result(),
                 job.captioned(),
@@ -260,6 +270,7 @@ pub(crate) fn run(
     cancel: &AtomicBool,
 ) -> Result<String, String> {
     let mut job = Job::open(video, output_dir)?;
+    let draft_source = crate::draft::inspect_source(&job, cancel)?;
     let (target_code, target_name) = clean_target(target);
     job.target = target_code.into();
     let choice = choice_override.unwrap_or_else(|| {
@@ -268,15 +279,22 @@ pub(crate) fn run(
             .map(|path| crate::read_choice(&path))
             .unwrap_or_default()
     });
+    crate::ollama::require_deepseek_local(&choice, skip_translate)?;
     crate::history::ensure_previous(&job.root)?;
     if job.root.join("editing.json").exists() {
         let previous: Option<RunSettings> = crate::job::read_json(&job.settings_path()).ok();
         if previous.is_none() && !redo { return Err("Không đọc được cấu hình của việc đã biên tập. Giữ dữ liệu để kiểm tra trước khi chạy lại.".into()); }
-        let reset = redo || previous.as_ref().is_some_and(|p| p.target != target_code || p.skip_translate != skip_translate || p.use_terms != use_terms);
-        if reset { crate::editing::archive(&job)?; } else { crate::editing::Editing::load(&job.root)?; }
+        let changed = previous.as_ref().is_some_and(|p| p.target != target_code || p.skip_translate != skip_translate || p.use_terms != use_terms || p.text_only != text_only
+            || (!text_only && p.voice != crate::selected_voice(app,target_code).unwrap_or_default()));
+        if changed || !demand::export_matches(&job.root)? { crate::job::archive_exports(&job.root)?; }
+        if redo { crate::editing::archive(&job)?; }
+        else if let Some(mut doc)=crate::editing::Editing::load(&job.root)? {
+            if previous.as_ref().is_some_and(|p| p.target!=target_code||p.skip_translate!=skip_translate) {
+                for cue in &mut doc.cues {cue.line.translation=if skip_translate{cue.line.source.clone()}else{String::new()};cue.authored=false;}
+                doc.generation_basis=None;doc.clear_draft_history();doc.save(&job.root)?;
+            }
+        }
     }
-    // Báo ngay khi DeepSeek local chưa chạy, trước khi xóa bản cũ hay tốn thời gian chép lời.
-    crate::ollama::require_deepseek_local(&choice, skip_translate)?;
     if redo {
         drop_translation(&job);
     }
@@ -306,6 +324,9 @@ pub(crate) fn run(
     require_tool("ffprobe")?;
     stopped(cancel)?;
 
+    crate::draft::begin(&job, draft_source, crate::draft::RunContext {
+        provider: choice.provider.clone(), model: crate::ollama::model_identity(&choice.provider, &choice.model), audio_only,
+    }, cancel)?;
     let mut clock = RunClock {
         app,
         job: &job,
@@ -314,10 +335,10 @@ pub(crate) fn run(
     };
     let edited = job.root.join("editing.json").exists();
     let mut translated = if edited {
-        for id in ["extract", "transcribe", "split", "names", "terms", "translate"] {
-            report(app, id, "skipped", "Giữ các câu đã biên tập. Không chép lời hoặc dịch lại.");
+        for id in ["extract", "transcribe", "split"] {
+            report(app, id, "skipped", "Giữ nguồn và ID câu đã biên tập.");
         }
-        crate::job::read_json(&job.translation_path())?
+        demand::finish_edited(app,&job,&choice,audio_only,cancel)?
     } else {
     timed(&mut clock, "extract", || extract(app, &job, cancel))
         .map_err(|error| fail(app, "extract", error))?;
@@ -328,7 +349,11 @@ pub(crate) fn run(
     let lines = timed(&mut clock, "split", || split(app, &job, &cues, cancel))
         .map_err(|error| fail(app, "split", error))?;
     let lines = timed(&mut clock, "names", || {
-        names_step(app, &job, &lines, &choice, cancel)
+        if skip_translate {
+            report(app,"names","skipped","Không dịch, giữ tên đã xác nhận; không gọi AI.");
+            let names=crate::job::read_json::<crate::names::NameList>(&job.names_path()).ok().filter(|n|n.confirmed).map(|n|n.names).unwrap_or_default();
+            Ok(translate::commit_renames(&job,&lines,&names))
+        } else {names_step(app, &job, &lines, &choice, cancel)}
     })
     .map_err(|error| fail(app, "names", error))?;
     let glossary = timed(&mut clock, "terms", || {
@@ -342,24 +367,61 @@ pub(crate) fn run(
         terms(app, &job, &lines, &choice, target_name, use_terms, cancel)
     })
     .map_err(|error| fail(app, "terms", error))?;
-    timed(&mut clock, "translate", || {
-        if skip_translate {
-            return keep_source(app, &job, &lines);
+    if skip_translate {
+        timed(&mut clock, "translate", || keep_source(app, &job, &lines))
+            .map_err(|error| fail(app, "translate", error))?
+    } else {
+        // The window keeps its voice loaded between batches. Native Piper still
+        // gets one complete batch in one process, avoiding repeated model loads.
+        let native = if !text_only {
+            let exe = crate::piper::locate();
+            let caps = exe.as_ref().and_then(|path| crate::piper::read_caps(path));
+            crate::piper::choose_engine(exe, caps) == crate::piper::SpeakEngine::Native
+        } else {
+            false
+        };
+        let overlap = !text_only && !native
+            && !file_ready(&job.result()) && !file_ready(&job.spoken());
+        if overlap {
+            let mut ready = overlap::ReadyLines::new(lines.len());
+            timed(&mut clock, "translate+speak", || {
+                overlap::run(
+                    cancel,
+                    |send| translate(
+                        app, &job, &lines, &glossary, &choice, target_name, target_code, cancel,
+                        !audio_only,
+                        &mut |done| {
+                            let batch = ready.take(&job, done);
+                            if !batch.is_empty() {
+                                send(batch)?;
+                            }
+                            Ok(())
+                        },
+                    ),
+                    |batch| speak::speak_ready(app, &job, lines.len(), batch, cancel),
+                    || crate::cancel_dub(app.clone()),
+                )
+            }).map_err(|error| fail(app, error.step, error.message))?
+        } else {
+            timed(&mut clock, "translate", || translate(
+                app,
+                &job,
+                &lines,
+                &glossary,
+                &choice,
+                target_name,
+                target_code,
+                cancel,
+                !audio_only && !text_only,
+                &mut |_| Ok(()),
+            )).map_err(|error| fail(app, "translate", error))?
         }
-        translate(
-            app,
-            &job,
-            &lines,
-            &glossary,
-            &choice,
-            target_name,
-            target_code,
-            cancel,
-        )
-    })
-    .map_err(|error| fail(app, "translate", error))?
+    }
     };
-    if !audio_only || edited {
+    if translated.iter().any(|line|!line.source.trim().is_empty()&&line.translation.trim().is_empty()) {
+        return Err(fail(app,"translate","Chưa đủ lời dịch để xuất. Đã giữ nháp; chạy tiếp để thử riêng phần thiếu.".into()));
+    }
+    if !edited && !audio_only {
         crate::timing::apply(&job.root, &mut translated)
             .map_err(|error| fail(app, "fit", error))?;
     }
@@ -367,6 +429,7 @@ pub(crate) fn run(
         report(app, "speak", "skipped", "Không đọc giọng.");
         report(app, "fit", "skipped", "Không co độ dài.");
         timed(&mut clock, "merge", || {
+            crate::draft::checkpoint(&job.root, Some(crate::draft::Phase::Exporting))?;
             assemble::merge_text(app, &job, &translated, cancel)
         })
         .map_err(|error| fail(app, "merge", error))?;
@@ -376,6 +439,7 @@ pub(crate) fn run(
             return Err("Không ghi được video có chữ.".into());
         }
         crate::history::publish(&job.root, &captioned, &[], (!skip_translate).then(|| crate::history::Provider { provider: choice.provider.clone(), model: choice.model.clone() }), None, cancel)?;
+        demand::mark_exported(&job,&captioned)?;
         return Ok(captioned.to_string_lossy().into_owned());
     }
     timed(&mut clock, "speak", || {
@@ -386,7 +450,7 @@ pub(crate) fn run(
             &choice,
             target_name,
             audio_only,
-            skip_translate || edited || job.root.join("timing.json").is_file(),
+            skip_translate || (!edited && job.root.join("timing.json").is_file()),
             cancel,
         )
     })
@@ -397,6 +461,7 @@ pub(crate) fn run(
     .map_err(|error| fail(app, "fit", error))?;
     if audio_only {
         timed(&mut clock, "merge", || {
+            crate::draft::checkpoint(&job.root, Some(crate::draft::Phase::Exporting))?;
             export_audio(app, &job, &translated, cancel)
         })
         .map_err(|error| {
@@ -409,9 +474,11 @@ pub(crate) fn run(
             return Err("Không ghi được audio bản dịch.".into());
         }
         crate::history::publish(&job.root, &spoken, &[], (!skip_translate).then(|| crate::history::Provider { provider: choice.provider.clone(), model: choice.model.clone() }), None, cancel)?;
+        demand::mark_exported(&job,&spoken)?;
         return Ok(spoken.to_string_lossy().into_owned());
     }
     timed(&mut clock, "merge", || {
+        crate::draft::checkpoint(&job.root, Some(crate::draft::Phase::Exporting))?;
         merge(app, &job, &translated, burn, cancel)
     })
     .map_err(|error| fail(app, "merge", error))?;
@@ -422,6 +489,7 @@ pub(crate) fn run(
         job.result()
     };
     crate::history::publish(&job.root, &played, &[], (!skip_translate).then(|| crate::history::Provider { provider: choice.provider.clone(), model: choice.model.clone() }), None, cancel)?;
+    demand::mark_exported(&job,&played)?;
     Ok(played.to_string_lossy().into_owned())
 }
 
@@ -440,6 +508,9 @@ struct RunClock<'a> {
 
 impl Drop for RunClock<'_> {
     fn drop(&mut self) {
+        if let Err(error) = crate::draft::checkpoint(&self.job.root, Some(crate::draft::Phase::Idle)) {
+            eprintln!("Không cập nhật được trạng thái nháp khi dừng: {error}");
+        }
         let paused = self.app.state::<DubControl>().read().pause.paused_ms;
         log_total(
             self.job,
@@ -548,6 +619,7 @@ fn label(id: &str) -> &'static str {
         "names" => "Tên",
         "terms" => "Thuật ngữ",
         "translate" => "Dịch",
+        "translate+speak" => "Dịch và đọc giọng cuốn chiếu",
         "speak" => "Đọc giọng",
         "fit" => "Co độ dài",
         "merge" => "Ghép video",
@@ -651,6 +723,13 @@ pub(crate) fn stopped(cancel: &AtomicBool) -> Result<(), String> {
         Err("Đã dừng.".into())
     } else {
         Ok(())
+    }
+}
+
+pub(crate) fn report_stopping(app: &AppHandle) {
+    let snapshot = app.state::<DubControl>().read();
+    for step in snapshot.steps.iter().filter(|step| step.state == "running") {
+        report(app, step.id, "running", "Đang dừng, chờ bộ xử lý hiện tại kết thúc.");
     }
 }
 

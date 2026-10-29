@@ -268,6 +268,7 @@ pub(crate) fn download(
     let dir = output_dir.join("tai-ve");
     // Đã tải link này rồi thì dùng lại file cũ, không hỏi YouTube lại (yt-dlp mất vài giây chỉ để dò thông tin).
     if let Some(path) = video_id(&url).and_then(|id| downloaded_video(&dir, &id)) {
+        super::source_captions::prepare(app, &path, output_dir, cancel)?;
         return Ok(path.to_string_lossy().into_owned());
     }
     require_tool("ffmpeg")?;
@@ -317,6 +318,7 @@ pub(crate) fn download(
                     "--progress-template",
                     "download:DLP %(progress.status)s %(progress.downloaded_bytes)s %(progress.total_bytes)s %(progress.total_bytes_estimate)s %(progress.speed)s %(progress.eta)s",
                     "--windows-filenames",
+                    "--write-info-json",
                     "-f",
                 ])
                 .arg(&chosen)
@@ -389,11 +391,19 @@ pub(crate) fn download(
     let path = printed
         .or_else(|| newest_video(&dir))
         .ok_or("yt-dlp không ghi được file video.")?;
+    super::source_captions::prepare(app, &path, output_dir, cancel)?;
     Ok(path.to_string_lossy().into_owned())
 }
 
 const LISTEN_AUDIO_FORMAT: &str = "ba[abr<=80]/139/ba[ext=m4a]/ba";
 const SUB_LANGS: &str = "en-orig,vi-orig,en,vi";
+
+pub(crate) fn prepare_source(app: &AppHandle, raw: &str, output: &Path, audio_only: bool, cancel: &AtomicBool) -> Result<String, String> {
+    let url = video_url(raw)?;
+    if audio_only && youtube_host(&url_host(&url).unwrap_or_default()) {
+        prepare_listen(app, &url, output, cancel)
+    } else { download(app, &url, output, cancel) }
+}
 
 // Chỉ audio: lưu link, lấy phụ đề nếu có, không thì tải tiếng. Không tải file hình.
 pub(crate) fn prepare_listen(
@@ -766,7 +776,7 @@ fn subtitle_rank(name: &str) -> Option<(u8, u8)> {
     Some((lang_rank, ext_rank))
 }
 
-fn cues_from_subtitle(text: &str, ext: &str) -> Result<Vec<Cue>, String> {
+pub(super) fn cues_from_subtitle(text: &str, ext: &str) -> Result<Vec<Cue>, String> {
     let ext = ext.to_ascii_lowercase();
     let cues = if ext == "json3" {
         cues_from_json3(text)?
@@ -998,7 +1008,7 @@ pub(crate) struct DownloadEvent {
     pub(super) progress: Option<f64>,
 }
 
-fn download_report(app: &AppHandle, detail: &str, progress: Option<f64>) {
+pub(super) fn download_report(app: &AppHandle, detail: &str, progress: Option<f64>) {
     let event = DownloadEvent {
         detail: detail.into(),
         progress,

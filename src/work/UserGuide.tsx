@@ -46,7 +46,8 @@ export function UserGuide({ onTools, onStart, onSettings }: {
             <li><strong>Chọn nơi lưu.</strong> Vào <button type="button" className="guide-inline" onClick={onSettings}>Cài đặt</button> và chọn folder kết quả.</li>
             <li><strong>Chọn nguồn.</strong> Ở màn Lồng tiếng, chọn <b>File trên máy → Chọn video</b>, hoặc dán link một video YouTube, Douyin hay TikTok vào <b>Link video</b>. Douyin và TikTok nhận cả đoạn chữ chia sẻ; YouTube cần URL riêng. Không nhận playlist.</li>
             <li><strong>Chọn kết quả và giọng.</strong> Chọn Video lồng tiếng, ngôn ngữ đích, giọng đọc và dịch vụ trong <b>Dịch bằng</b>. Nghe thử giọng; nhập và lưu API key nếu dịch vụ cần key.</li>
-            <li><strong>Bấm Chạy.</strong> Theo dõi tại <b>Hàng đợi</b>. Khi app chờ duyệt tên, sửa tên chép sai hoặc giữ danh sách rồi bấm <b>Dịch tiếp</b>.</li>
+            <li><strong>Mở nguồn & sửa nháp.</strong> Phát nguồn ngay sau khi mở; chọn <b>Lấy lời gốc</b>, <b>Bản dịch</b> hoặc <b>Giọng lồng</b> tùy phần bạn muốn kiểm tra. App chưa xuất file ở bước này.</li>
+            <li><strong>Xuất khi sẵn sàng.</strong> Bấm <b>Xuất video</b> hoặc <b>Xuất audio</b> kể cả khi mới xem vài câu. App hoàn tất phần thiếu; kiểm tra tên rồi bấm <b>Dịch tiếp</b> khi được yêu cầu. Muốn xử lý thẳng cả nguồn, dùng <b>Chạy toàn bộ</b> ở màn chọn nguồn.</li>
             <li><strong>Xem và lưu.</strong> Kiểm tra video hoàn thành, dùng <b>Mở folder</b> để lấy kết quả hoặc <b>Tải video</b> để lưu bản MP4 sang nơi khác.</li>
           </ol>
           <aside className="guide-note">Giữ cửa sổ app mở trong lúc xử lý. Giọng đọc có thể chạy ngay trong cửa sổ này.</aside>
@@ -74,10 +75,10 @@ export function UserGuide({ onTools, onStart, onSettings }: {
           </div>
         </Topic>
         <Topic id="preview" title="Xem và nghe trước khi xuất">
-          <p><b>Xem trước</b> phát video gốc trong khi app chép lời, dịch và đọc từng câu. Nếu gần hết phần đã xử lý, video tạm dừng ở trạng thái <b>Đang dịch tiếp</b>. Chờ phần sau sẵn sàng để xem tiếp.</p>
-          <p>Với Audio, dùng <b>Nghe trước</b>. Nguồn link có phụ đề có thể chia thành nhiều phần; chọn phần để dịch và nghe phần đó.</p>
-          <aside className="guide-note">Xem/nghe trước chưa qua duyệt tên và thuật ngữ như khi xuất. Xem trước cũng chưa áp dụng căn độ dài giọng, khung xuất và kiểu chữ. Kiểm tra bản xuất hoàn chỉnh để đánh giá kết quả cuối.</aside>
-          <p>Sau khi xem, dùng <b>Ghép video</b> hoặc <b>Xuất audio</b>. Dừng giữa chừng có thể cần xử lý lại phần xem trước chưa hoàn thành.</p>
+          <p>Trong nháp, <b>Nguồn</b> chỉ phát file gốc; <b>Bản dịch</b> chuẩn bị chữ quanh vị trí phát, không tạo giọng. <b>Giọng lồng</b> chuẩn bị thêm WAV và phát trên nguồn, với phần đệm phía trước khoảng 30 giây.</p>
+          <p>Tua để ưu tiên vùng mới. Tạm dừng sẽ ngừng nạp thêm; lô đang chạy có thể hoàn tất và được giữ lại. Whisper vẫn chép toàn nguồn một lượt nếu chưa có phụ đề, nên lần đầu cần chờ bước này.</p>
+          <aside className="guide-note">Tên/thuật ngữ chưa duyệt và căn tiếng thiếu ngữ cảnh được ghi rõ là nháp. Bản xuất duyệt tên, áp dụng thuật ngữ nếu bật và căn toàn bộ. Âm lượng mô phỏng trong cửa sổ tối đa 100%; mức tăng lớn hơn áp dụng khi xuất.</aside>
+          <p><b>Lưu nháp</b> chỉ lưu lời, mốc và cấu hình. <b>Nghe câu</b> chuẩn bị giọng của câu đó; <b>Dựng thử 8 giây</b> dựng đoạn đang chọn. Chỉ nút <b>Xuất</b> mới tạo kết quả đầy đủ.</p>
         </Topic>
         <Topic id="style" title="Chỉnh hình, phụ đề và âm thanh">
           <p>Mở <b>Hình ảnh, chữ & âm thanh</b> trên màn Lồng tiếng. Chọn nhóm cấu hình cần chỉnh rồi bấm <b>Dùng cấu hình này</b> để quay lại.</p>

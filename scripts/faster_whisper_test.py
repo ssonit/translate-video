@@ -65,7 +65,9 @@ class FasterWhisperFormat(unittest.TestCase):
             {
                 "language": None,
                 "beam_size": 5,
-                "vad_filter": False,
+                "vad_filter": True,
+                "vad_parameters": {"min_silence_duration_ms": 500, "speech_pad_ms": 200},
+                "condition_on_previous_text": False,
                 "word_timestamps": False,
             },
         )

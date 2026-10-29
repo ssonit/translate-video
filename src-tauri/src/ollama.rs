@@ -1,6 +1,5 @@
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
@@ -480,33 +479,31 @@ pub(crate) fn complete_timed(
     }
 }
 
-// The HTTP call can block for minutes (timeout 180s plus retry waits). Run it on its own thread
-// and poll the stop flag, so Dừng takes effect at once; an abandoned call ends on its own.
+// The blocking HTTP exchange stays owned by the task. Cancellation stops retries
+// and discards the response, but the slot remains occupied until the exchange ends.
 fn request_cancelable(
     choice: &TranslationChoice,
     prompt: &str,
     cancel: &AtomicBool,
     json: bool,
 ) -> Result<(String, LocalTimings), CompleteError> {
-    let (sender, receiver) = mpsc::channel();
-    let choice = choice.clone();
-    let prompt = prompt.to_string();
-    std::thread::spawn(move || {
-        let _ = sender.send(request(&choice, &prompt, json));
-    });
+    owned_request(cancel, || request(choice, prompt, json, cancel))
+}
+
+fn owned_request<T>(cancel: &AtomicBool, work: impl FnOnce() -> Result<T, String>) -> Result<T, CompleteError> {
+    if cancel.load(Ordering::SeqCst) { return Err(CompleteError::Stopped); }
+    let result = work();
+    if cancel.load(Ordering::SeqCst) { return Err(CompleteError::Stopped); }
+    result.map_err(CompleteError::Transport)
+}
+
+fn wait_cancel(cancel: &AtomicBool, duration: Duration) -> Result<(), String> {
+    let until = Instant::now() + duration;
     loop {
-        if cancel.load(Ordering::Relaxed) {
-            return Err(CompleteError::Stopped);
-        }
-        match receiver.recv_timeout(Duration::from_millis(100)) {
-            Ok(result) => return result.map_err(CompleteError::Transport),
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                return Err(CompleteError::Transport(
-                    "Không gọi được dịch vụ AI.".into(),
-                ));
-            }
-        }
+        if cancel.load(Ordering::SeqCst) { return Err("Đã dừng.".into()); }
+        let remaining = until.saturating_duration_since(Instant::now());
+        if remaining.is_zero() { return Ok(()); }
+        std::thread::sleep(remaining.min(Duration::from_millis(50)));
     }
 }
 
@@ -524,16 +521,18 @@ fn request(
     choice: &TranslationChoice,
     prompt: &str,
     json: bool,
+    cancel: &AtomicBool,
 ) -> Result<(String, LocalTimings), String> {
     let agent = shared_agent();
     match choice.provider.as_str() {
-        "local" => ollama_request(&agent, model_or(&choice.model, LOCAL_MODEL), prompt, json),
+        "local" => ollama_request(&agent, model_or(&choice.model, LOCAL_MODEL), prompt, json, cancel),
         "openai" => openai_request(
             &agent,
             &choice.api_key,
             model_or(&choice.model, OPENAI_MODEL),
             prompt,
             json,
+            cancel,
         )
         .map(|text| (text, LocalTimings::default())),
         "claude" => claude_request(
@@ -543,6 +542,7 @@ fn request(
             prompt,
             // Lô JSON vài chục câu. Trần thấp cắt giữa object, mất khóa rồi phải gọi lại.
             PROSE_MAX_TOKENS,
+            cancel,
         )
         .map(|text| (text, LocalTimings::default())),
         "gemini" => gemini_request(
@@ -551,6 +551,7 @@ fn request(
             model_or(&choice.model, GEMINI_MODEL),
             prompt,
             json,
+            cancel,
         )
         .map(|text| (text, LocalTimings::default())),
         "deepseek" => deepseek_request(
@@ -559,10 +560,11 @@ fn request(
             model_or(&choice.model, DEEPSEEK_MODEL),
             prompt,
             json,
+            cancel,
         )
         .map(|text| (text, LocalTimings::default())),
         "deepseek-local" => {
-            deepseek_local_request(model_or(&choice.model, DEEPSEEK_LOCAL_MODEL), prompt, json)
+            deepseek_local_request(model_or(&choice.model, DEEPSEEK_LOCAL_MODEL), prompt, json, cancel)
                 .map(|text| (text, LocalTimings::default()))
         }
         _ => Err("Không rõ dịch vụ.".into()),
@@ -577,6 +579,14 @@ fn model_or<'a>(chosen: &'a str, default: &'a str) -> &'a str {
     } else {
         chosen
     }
+}
+
+pub(crate) fn model_identity(provider: &str, chosen: &str) -> String {
+    model_or(chosen, match provider {
+        "local" => LOCAL_MODEL, "openai" => OPENAI_MODEL, "claude" => CLAUDE_MODEL,
+        "gemini" => GEMINI_MODEL, "deepseek" => DEEPSEEK_MODEL,
+        "deepseek-local" => DEEPSEEK_LOCAL_MODEL, _ => "",
+    }).into()
 }
 
 pub(crate) const OPENAI_MODEL: &str = "gpt-4o-mini";
@@ -639,9 +649,10 @@ fn ollama_request(
     model: &str,
     prompt: &str,
     json: bool,
+    cancel: &AtomicBool,
 ) -> Result<(String, LocalTimings), String> {
     let payload = ollama_payload(model, prompt, json);
-    let body = send(agent, "POST", LOCAL_URL, &[], &payload)
+    let body = send(agent, "POST", LOCAL_URL, &[], &payload, cancel)
         .map_err(|error| format!("Không gọi được Ollama tại http://127.0.0.1:11434. {error}"))?;
     let text = body
         .get("message")
@@ -824,6 +835,7 @@ fn deepseek_request(
     model: &str,
     prompt: &str,
     json: bool,
+    cancel: &AtomicBool,
 ) -> Result<String, String> {
     let payload = deepseek_payload(model, prompt, json);
     let body = send(
@@ -832,6 +844,7 @@ fn deepseek_request(
         DEEPSEEK_URL,
         &[("Authorization", &format!("Bearer {key}"))],
         &payload,
+        cancel,
     )
     .map_err(|error| format!("DeepSeek từ chối yêu cầu. {error}"))?;
     body["choices"][0]["message"]["content"]
@@ -903,12 +916,22 @@ pub(crate) fn require_deepseek_local(
     Ok(())
 }
 
-fn deepseek_local_request(model: &str, prompt: &str, json: bool) -> Result<String, String> {
+fn deepseek_local_request(model: &str, prompt: &str, json: bool, cancel: &AtomicBool) -> Result<String, String> {
+    static ACTIVE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _request = loop {
+        if cancel.load(Ordering::SeqCst) { return Err("Đã dừng.".into()); }
+        match ACTIVE.try_lock() {
+            Ok(guard) => break guard,
+            Err(std::sync::TryLockError::Poisoned(error)) => break error.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => wait_cancel(cancel, Duration::from_millis(50))?,
+        }
+    };
     let payload = deepseek_local_payload(model, prompt, json);
     let text = serde_json::to_string(&payload).map_err(|error| error.to_string())?;
     let waits = [1u64, 2, 4];
     let mut attempt = 0u8;
     let response = loop {
+        if cancel.load(Ordering::SeqCst) { return Err("Đã dừng.".into()); }
         match deepseek_local_agent()
             .post(DEEPSEEK_LOCAL_URL)
             .set("Content-Type", "application/json")
@@ -943,7 +966,7 @@ fn deepseek_local_request(model: &str, prompt: &str, json: bool) -> Result<Strin
                                 .into(),
                         );
                     }
-                    std::thread::sleep(std::time::Duration::from_secs(wait));
+                    wait_cancel(cancel, Duration::from_secs(wait))?;
                     continue;
                 }
                 return Err(format!(
@@ -1060,6 +1083,7 @@ fn openai_request(
     model: &str,
     prompt: &str,
     json: bool,
+    cancel: &AtomicBool,
 ) -> Result<String, String> {
     let payload = openai_payload(model, prompt, json);
     let body = send(
@@ -1068,6 +1092,7 @@ fn openai_request(
         "https://api.openai.com/v1/chat/completions",
         &[("Authorization", &format!("Bearer {key}"))],
         &payload,
+        cancel,
     )
     .map_err(|error| format!("ChatGPT từ chối yêu cầu. {error}"))?;
     body["choices"][0]["message"]["content"]
@@ -1090,6 +1115,7 @@ fn claude_request(
     model: &str,
     prompt: &str,
     max_tokens: u32,
+    cancel: &AtomicBool,
 ) -> Result<String, String> {
     let payload = claude_payload(model, prompt, max_tokens);
     let body = send(
@@ -1098,6 +1124,7 @@ fn claude_request(
         "https://api.anthropic.com/v1/messages",
         &[("x-api-key", key), ("anthropic-version", "2023-06-01")],
         &payload,
+        cancel,
     )
     .map_err(|error| format!("Claude từ chối yêu cầu. {error}"))?;
     body["content"][0]["text"]
@@ -1168,6 +1195,7 @@ fn gemini_request(
     model: &str,
     prompt: &str,
     json: bool,
+    cancel: &AtomicBool,
 ) -> Result<String, String> {
     let payload = gemini_payload(model, prompt, json);
     let body = send(
@@ -1176,6 +1204,7 @@ fn gemini_request(
         &format!("{GEMINI_URL}{model}:generateContent"),
         &[("x-goog-api-key", key)],
         &payload,
+        cancel,
     )
     .map_err(|error| format!("Gemini từ chối yêu cầu. {error}"))?;
     gemini_answer(&body).ok_or_else(|| "Gemini không trả lời.".into())
@@ -1193,11 +1222,13 @@ fn send(
     url: &str,
     headers: &[(&str, &str)],
     payload: &Value,
+    cancel: &AtomicBool,
 ) -> Result<Value, String> {
     let text = serde_json::to_string(payload).map_err(|error| error.to_string())?;
     // Máy chủ AI hay quá tải tạm thời (503, 429...). Thử lại vài lần, chờ lâu dần.
     let mut waits = RETRY_WAITS_SECS.iter();
     let response = loop {
+        if cancel.load(Ordering::SeqCst) { return Err("Đã dừng.".into()); }
         let mut request = agent.post(url).set("Content-Type", "application/json");
         for (name, value) in headers {
             request = request.set(name, value);
@@ -1205,7 +1236,7 @@ fn send(
         match request.send_string(&text) {
             Ok(response) => break response,
             Err(ureq::Error::Status(code, _)) if is_retryable(code) => match waits.next() {
-                Some(secs) => std::thread::sleep(std::time::Duration::from_secs(*secs)),
+                Some(secs) => wait_cancel(cancel, Duration::from_secs(*secs))?,
                 None => return Err(format!("{code} Dịch vụ đang quá tải, đã tự thử lại nhưng vẫn lỗi. Chờ vài phút rồi chạy lại.")),
             },
             Err(error) => return Err(http_error(error)),
@@ -1336,6 +1367,63 @@ fn nearest_space(chars: &[char], target: usize) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cancelling_an_owned_request_does_not_detach_it_or_unlock_another_job() {
+        let tasks = crate::coordinator::Coordinator::default();
+        let (entered, started) = std::sync::mpsc::channel();
+        let (finish, wait) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            let owner = &tasks;
+            let worker = scope.spawn(move || {
+                let _lease = owner.acquire(crate::coordinator::Kind::Preview).unwrap();
+                let result = owned_request(&owner.cancel, || {
+                    entered.send(()).unwrap();
+                    wait.recv().unwrap();
+                    Ok("response that must be discarded")
+                });
+                assert!(matches!(result, Err(CompleteError::Stopped)));
+            });
+            started.recv().unwrap();
+            tasks.request_cancel(|| {});
+            assert!(tasks.acquire(crate::coordinator::Kind::Export).is_err());
+            finish.send(()).unwrap();
+            worker.join().unwrap();
+            assert!(tasks.acquire(crate::coordinator::Kind::Export).is_ok());
+        });
+    }
+
+    #[test]
+    fn cancellation_stops_http_retry_backoff_without_sending_another_request() {
+        use std::io::{BufRead, Read, Write};
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/test", server.local_addr().unwrap());
+        let cancel = AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let (stream, _) = server.accept().unwrap();
+                stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+                let mut reader = std::io::BufReader::new(stream);
+                let mut length = 0;
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" { break; }
+                    if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        length = value.trim().parse::<usize>().unwrap();
+                    }
+                }
+                reader.read_exact(&mut vec![0; length]).unwrap();
+                cancel.store(true, Ordering::SeqCst);
+                reader.get_mut().write_all(b"HTTP/1.1 429 Too Many Requests\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+            });
+            let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(2)).build();
+            let started = Instant::now();
+            let result = send(&agent, "POST", &url, &[], &serde_json::json!({}), &cancel);
+            assert_eq!(result.unwrap_err(), "Đã dừng.");
+            assert!(started.elapsed() < Duration::from_secs(2));
+        });
+    }
     use serde_json::json;
 
     #[test]

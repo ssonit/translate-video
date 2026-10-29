@@ -22,7 +22,7 @@ use crate::ollama::{
 use super::retake::language_code;
 use super::{drop_after_names, report, report_progress, stopped, RunSettings};
 
-fn skips_terms(choice: &crate::TranslationChoice) -> bool {
+pub(super) fn skips_terms(choice: &crate::TranslationChoice) -> bool {
     if choice.provider != "local" {
         return false;
     }
@@ -35,7 +35,7 @@ fn skips_terms(choice: &crate::TranslationChoice) -> bool {
     crate::ollama::is_translate_gemma(model)
 }
 
-fn commit_renames(job: &Job, lines: &[Cue], names: &[NameFix]) -> Vec<Cue> {
+pub(super) fn commit_renames(job: &Job, lines: &[Cue], names: &[NameFix]) -> Vec<Cue> {
     let next = renamed(lines, names);
     invalidate_changed_lines(job, &next);
     next
@@ -141,6 +141,7 @@ pub(crate) fn prepare_again(
         }
         for path in [
             job.transcript(),
+            job.root.join("transcript-source.json"),
             job.lines_path(),
             job.names_path(),
             job.translation_path(),
@@ -266,12 +267,19 @@ fn wait_for_names(
 }
 
 pub(super) fn names_step(
+    app: &AppHandle, job: &Job, lines: &[Cue], choice: &crate::TranslationChoice, cancel: &AtomicBool,
+) -> Result<Vec<Cue>, String> {
+    let names = review_names(app, job, lines, choice, cancel)?;
+    Ok(commit_renames(job, lines, &names))
+}
+
+pub(super) fn review_names(
     app: &AppHandle,
     job: &Job,
     lines: &[Cue],
     choice: &crate::TranslationChoice,
     cancel: &AtomicBool,
-) -> Result<Vec<Cue>, String> {
+) -> Result<Vec<NameFix>, String> {
     if let Some(saved) = read_json::<NameList>(&job.names_path())
         .ok()
         .filter(|list| list.confirmed)
@@ -283,7 +291,7 @@ pub(super) fn names_step(
             format!("Đã có {count} tên, áp dụng.")
         };
         report(app, "names", "skipped", detail);
-        return Ok(commit_renames(job, lines, &saved.names));
+        return Ok(usable_names(&saved.names));
     }
     stopped(cancel)?;
     report(app, "names", "running", "Đang tìm tên bị chép sai.");
@@ -337,7 +345,7 @@ pub(super) fn names_step(
     } else {
         report(app, "names", "done", format!("{} tên.", chosen.len()));
     }
-    Ok(commit_renames(job, lines, &chosen))
+    Ok(chosen)
 }
 
 pub(super) fn terms(
@@ -368,7 +376,13 @@ pub(super) fn terms(
             terms: Vec::new(),
         });
     }
-    if file_ready(&job.terms_path()) {
+    let cache = crate::text_cache::lease(job, crate::text_cache::Kind::Terms, lines, None, false)?;
+    if let Some(cache) = &cache {
+        if let Some(glossary) = crate::text_cache::cached_terms(job, cache)? {
+            report(app, "terms", "skipped", format!("Đã xác minh {} thuật ngữ, bỏ qua.", glossary.terms.len()));
+            return Ok(glossary);
+        }
+    } else if file_ready(&job.terms_path()) {
         if let Ok(glossary) = read_json::<Glossary>(&job.terms_path()) {
             report(
                 app,
@@ -409,7 +423,8 @@ pub(super) fn terms(
             });
         }
     };
-    write_json(&job.terms_path(), &glossary)?;
+    if let Some(cache) = cache { cache.commit_terms(&glossary)?; }
+    else { write_json(&job.terms_path(), &glossary)?; }
     report(
         app,
         "terms",
@@ -426,9 +441,11 @@ pub(super) fn keep_source(
     lines: &[Cue],
 ) -> Result<Vec<TranslatedLine>, String> {
     let kept = lines_as_spoken(lines);
+    let cache = crate::text_cache::lease(job, crate::text_cache::Kind::Translation, lines, None, false)?;
     if file_ready(&job.translation_path()) {
         if let Ok(done) = read_json::<Vec<TranslatedLine>>(&job.translation_path()) {
             if done == kept {
+                if let Some(cache) = &cache { cache.commit_translation(&done)?; }
                 report(
                     app,
                     "translate",
@@ -439,7 +456,11 @@ pub(super) fn keep_source(
             }
         }
     }
-    write_json(&job.translation_path(), &kept)?;
+    if let Some(cache) = cache {
+        crate::text_cache::prepare_translation(job, &cache)?;
+        crate::job::archive_exports(&job.root)?;
+        cache.commit_translation(&kept)?;
+    } else { write_json(&job.translation_path(), &kept)?; }
     report(
         app,
         "translate",
@@ -470,13 +491,22 @@ pub(super) fn translate(
     target: &str,
     target_code: &str,
     cancel: &AtomicBool,
+    speech_timing: bool,
+    ready: &mut dyn FnMut(&[TranslatedLine]) -> Result<(), String>,
 ) -> Result<Vec<TranslatedLine>, String> {
+    let cache = crate::text_cache::lease(job, crate::text_cache::Kind::Translation, lines, Some(glossary), speech_timing)?;
+    if let Some(cache) = &cache {
+        if crate::text_cache::prepare_translation(job, cache)? {
+            report(app, "translate", "running", "Đã cất cache chưa xác minh; dịch lại phần thiếu theo cấu hình hiện tại.");
+        }
+    }
     if file_ready(&job.translation_path()) {
         if let Ok(done) = read_json::<Vec<TranslatedLine>>(&job.translation_path()) {
             let in_target = done
                 .iter()
                 .all(|item| !wrong_language(&item.translation, target_code));
             if translation_ready(lines, &done) && in_target {
+                ready(&done)?;
                 report(
                     app,
                     "translate",
@@ -488,21 +518,29 @@ pub(super) fn translate(
         }
     }
     stopped(cancel)?;
-    let mut done = if file_ready(&job.translation_path()) {
+    let done = if file_ready(&job.translation_path()) {
         read_json::<Vec<TranslatedLine>>(&job.translation_path()).unwrap_or_default()
     } else {
         Vec::new()
     };
-    done = align_saved(lines, &done);
+    let saved = done;
+    let mut done = align_saved(lines, &saved);
     // A saved line in the wrong language is dropped, so it gets translated again below.
-    for item in done.iter_mut() {
+    for (index, item) in done.iter_mut().enumerate() {
         if wrong_language(&item.translation, target_code) {
             item.translation.clear();
         }
+        if saved.get(index).is_some_and(|old| old.source != item.source || old.translation != item.translation) {
+            let _ = std::fs::remove_file(job.line_wav(index + 1));
+            drop_mix(job);
+        }
     }
+    ready(&done)?;
+    let mut previous = done.clone();
     report(app, "translate", "running", "Đang dịch.");
     let mut trace = TranslateTrace::logging();
-    let outcome = translate_work(
+    let windows = speech_timing.then(|| super::speech_plan::windows(lines));
+    let outcome = translate_with_timing(
         lines,
         done,
         glossary,
@@ -513,7 +551,8 @@ pub(super) fn translate(
         None,
         &mut trace,
         &mut |detail, done_n, total| report_progress(app, "translate", detail, done_n, total),
-        &mut |done| write_json(&job.translation_path(), done),
+        &mut |done| publish_translation(job, &mut previous, done, cache.as_ref(), ready),
+        windows.as_deref(),
     );
     eprintln!("{}", trace.summary_line());
     let (done, skipped) = outcome?;
@@ -540,7 +579,48 @@ pub(super) fn translate(
     Ok(done)
 }
 
+fn publish_translation(
+    job: &Job,
+    previous: &mut Vec<TranslatedLine>,
+    done: &Vec<TranslatedLine>,
+    cache: Option<&crate::text_cache::Lease>,
+    ready: &mut dyn FnMut(&[TranslatedLine]) -> Result<(), String>,
+) -> Result<(), String> {
+    if let Some(cache) = cache { cache.validate()?; }
+    // A previously skipped sentence may have a cached silent WAV. Remove it
+    // before exposing a newly accepted translation to the speaker.
+    let changed: Vec<_> = done.iter().enumerate().filter_map(|(index, line)| {
+        previous.get(index).is_none_or(|old| old.translation != line.translation).then_some(index)
+    }).collect();
+    if !changed.is_empty() {
+        crate::job::archive_exports(&job.root)?;
+        for index in changed { let _ = std::fs::remove_file(job.line_wav(index + 1)); }
+        drop_mix(job);
+    }
+    if let Some(cache) = cache { cache.commit_translation(done)?; }
+    else { write_json(&job.translation_path(), done)?; }
+    *previous = done.clone();
+    ready(done)
+}
+
 pub(crate) fn translate_work(
+    lines: &[Cue],
+    done: Vec<TranslatedLine>,
+    glossary: &Glossary,
+    choice: &crate::TranslationChoice,
+    target: &str,
+    target_code: &str,
+    cancel: &AtomicBool,
+    max_batches: Option<usize>,
+    trace: &mut TranslateTrace,
+    progress: &mut dyn FnMut(String, f64, f64),
+    save: &mut dyn FnMut(&Vec<TranslatedLine>) -> Result<(), String>,
+) -> Result<(Vec<TranslatedLine>, Vec<usize>), String> {
+    translate_with_timing(lines, done, glossary, choice, target, target_code, cancel,
+        max_batches, trace, progress, save, None)
+}
+
+pub(super) fn translate_with_timing(
     lines: &[Cue],
     mut done: Vec<TranslatedLine>,
     glossary: &Glossary,
@@ -552,6 +632,7 @@ pub(crate) fn translate_work(
     trace: &mut TranslateTrace,
     progress: &mut dyn FnMut(String, f64, f64),
     save: &mut dyn FnMut(&Vec<TranslatedLine>) -> Result<(), String>,
+    windows: Option<&[f64]>,
 ) -> Result<(Vec<TranslatedLine>, Vec<usize>), String> {
     // Máy một GPU: từng lô một. API online gom lô và chạy nhiều lô cùng lúc.
     if choice.provider != "local" {
@@ -567,6 +648,7 @@ pub(crate) fn translate_work(
             trace,
             progress,
             save,
+            windows,
         );
     }
     trace.begin(0);
@@ -621,7 +703,10 @@ pub(crate) fn translate_work(
         trace.begin((batch_index + 1) as u32);
         let parsed = complete_timed(
             choice,
-            &batch_prompt(&batch, &before, &after, &matched, &glossary.theme, target),
+            &super::speech_plan::timed_prompt(
+                batch_prompt(&batch, &before, &after, &matched, &glossary.theme, target),
+                &todo, windows, target_code,
+            ),
             cancel,
             trace,
         )
@@ -647,7 +732,9 @@ pub(crate) fn translate_work(
         // and the next run tries only that line again.
         for i in again {
             let matched = terms_for_line(&glossary.terms, &texts[i]);
-            let prompt = retry_prompt(&texts[i], &matched, target);
+            let prompt = super::speech_plan::timed_prompt(
+                retry_prompt(&texts[i], &matched, target), &[i], windows, target_code,
+            );
             let mut rejected: Vec<String> = Vec::new();
             let mut last_error = String::new();
             let mut accepted = false;
@@ -748,6 +835,7 @@ fn translate_online(
     trace: &mut TranslateTrace,
     progress: &mut dyn FnMut(String, f64, f64),
     save: &mut dyn FnMut(&Vec<TranslatedLine>) -> Result<(), String>,
+    windows: Option<&[f64]>,
 ) -> Result<(Vec<TranslatedLine>, Vec<usize>), String> {
     let width = online_width(&choice.provider);
     struct Tick {
@@ -769,7 +857,7 @@ fn translate_online(
     };
     let texts: Vec<String> = lines.iter().map(|line| line.text.clone()).collect();
     let mut next_batch = 1u32;
-    let jobs = collect_jobs(
+    let mut jobs = collect_jobs(
         &texts,
         &done,
         glossary,
@@ -777,6 +865,11 @@ fn translate_online(
         max_batches,
         &mut next_batch,
     );
+    for batch in &mut jobs {
+        batch.prompt = super::speech_plan::timed_prompt(
+            std::mem::take(&mut batch.prompt), &batch.todo, windows, target_code,
+        );
+    }
     let mut open: Vec<OpenLine> = Vec::new();
     let mut skipped: Vec<usize> = Vec::new();
     for wave in jobs.chunks(width) {
@@ -811,7 +904,9 @@ fn translate_online(
                 batch_no,
                 start,
                 end,
-                prompt: prompt_for(&texts, &indices, glossary, target),
+                prompt: super::speech_plan::timed_prompt(
+                    prompt_for(&texts, &indices, glossary, target), &indices, windows, target_code,
+                ),
                 todo: indices,
             });
         }
@@ -1148,6 +1243,29 @@ mod tests {
     use std::process::Command;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::thread;
+
+    #[test]
+    fn ready_speech_sees_persisted_translation_and_no_stale_silent_wav() {
+        let (root, job) = sample_job("publish-speech");
+        let mut previous = vec![blank("first"), blank("second")];
+        previous[1].translation = "Câu đã đọc".into();
+        let mut done = previous.clone();
+        done[0].translation = "Câu mới dịch".into();
+        std::fs::write(job.line_wav(1), b"old silence").unwrap();
+        std::fs::write(job.line_wav(2), b"kept voice").unwrap();
+        std::fs::write(job.dub(), b"stale mix").unwrap();
+        let error = publish_translation(&job, &mut previous, &done, None, &mut |ready| {
+            let saved: Vec<TranslatedLine> = read_json(&job.translation_path()).unwrap();
+            assert_eq!(saved, ready);
+            assert!(!job.line_wav(1).exists());
+            assert_eq!(std::fs::read(job.line_wav(2)).unwrap(), b"kept voice");
+            assert!(!job.dub().exists());
+            Err("Đã dừng.".into())
+        }).unwrap_err();
+        assert_eq!(error, "Đã dừng.");
+        assert_eq!(read_json::<Vec<TranslatedLine>>(&job.translation_path()).unwrap(), done);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn voice_only_keeps_the_transcript_including_han_viet() {

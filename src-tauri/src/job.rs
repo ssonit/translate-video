@@ -119,8 +119,11 @@ impl Job {
         }
         let stem = folder_name(Path::new(stem));
         let root = output_dir.join(&stem);
-        std::fs::create_dir_all(root.join("lines")).map_err(|error| error.to_string())?;
         let mut saved = read_json::<VideoSource>(&root.join("source.json")).unwrap_or_default();
+        if root.join("source.json").exists() && (saved.url != url || saved.url.is_empty()) {
+            return Err("Folder việc này thuộc nguồn khác. Chọn folder kết quả khác hoặc đổi tên nguồn mới.".into());
+        }
+        std::fs::create_dir_all(root.join("lines")).map_err(|error| error.to_string())?;
         saved.url = url.to_string();
         write_json(&root.join("source.json"), &saved)?;
         Self::reopen(&root)
@@ -719,6 +722,18 @@ pub(crate) fn set_source_media(root: &Path, media: &Path) -> Result<(), String> 
     write_json(&root.join("source.json"), &saved)
 }
 
+// Bind a newly opened download only after its exact media path has been checked.
+// Existing manifests retain their original locator and recovery contract.
+pub(crate) fn bind_download_link(root: &Path, media: &Path, url: &str) -> Result<(), String> {
+    let mut saved: VideoSource = read_json(&root.join("source.json"))?;
+    require_same_source(root, media)?;
+    if !saved.url.is_empty() && saved.url != url { return Err("Folder việc đã gắn với link nguồn khác.".into()); }
+    if saved.url.is_empty() && !root.join("draft.json").exists() {
+        saved.url = url.into(); write_json(&root.join("source.json"), &saved)?;
+    }
+    Ok(())
+}
+
 // Ghi file hình tải sau, giữ link và file tiếng.
 pub(crate) fn set_source_picture(root: &Path, picture: &Path) -> Result<(), String> {
     let mut saved = read_json::<VideoSource>(&root.join("source.json")).unwrap_or_default();
@@ -750,14 +765,9 @@ pub(crate) fn file_ready(path: &Path) -> bool {
 }
 
 pub(crate) fn write_json(path: &Path, value: &impl Serialize) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    }
     let text = serde_json::to_string_pretty(value).map_err(|error| error.to_string())?;
-    let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, text).map_err(|error| error.to_string())?;
-    std::fs::rename(&tmp, path).map_err(|error| error.to_string())?;
-    Ok(())
+    crate::atomic_file::write(path, text.as_bytes())?;
+    crate::draft::after_json(path)
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -1216,6 +1226,10 @@ mod tests {
         let output = dir.join("out");
         fs::create_dir_all(&output).unwrap();
         let job = Job::open_listen(&output, "Talk [abc]", "https://youtu.be/abcdefghijk").unwrap();
+        let original = fs::read(job.root.join("source.json")).unwrap();
+        assert!(Job::open_listen(&output, "Talk [abc]", "https://youtu.be/otherSource").is_err());
+        assert_eq!(fs::read(job.root.join("source.json")).unwrap(), original);
+        Job::open_listen(&output, "Talk [abc]", "https://youtu.be/abcdefghijk").unwrap();
         assert_eq!(job.root, output.join("Talk [abc]"));
         assert_eq!(source_url(&job.root), "https://youtu.be/abcdefghijk");
         assert!(saved_picture(&job.root).is_none());
@@ -1234,6 +1248,18 @@ mod tests {
         assert_eq!(merged.video, audio);
         assert_eq!(merged.spoken(), job.root.join("Talk [abc].vi.m4a"));
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_verified_download_link_can_be_bound_without_reusing_another_source() {
+        let dir = scratch("bind-link"); let out = dir.join("out");
+        fs::create_dir_all(&out).unwrap(); let source = dir.join("video.mp4"); fs::write(&source,b"media").unwrap();
+        let job=Job::open(&source,&out).unwrap();
+        assert!(bind_download_link(&job.root,&dir.join("else.mp4"),"https://youtu.be/abc").is_err());
+        bind_download_link(&job.root,&source,"https://youtu.be/abc").unwrap();
+        assert_eq!(source_url(&job.root),"https://youtu.be/abc");
+        assert!(bind_download_link(&job.root,&source,"https://youtu.be/other").is_err());
+        assert_eq!(source_url(&job.root),"https://youtu.be/abc"); let _=fs::remove_dir_all(dir);
     }
 
     #[test]

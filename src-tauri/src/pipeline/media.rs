@@ -268,6 +268,7 @@ pub(super) fn split(
     }
     stopped(cancel)?;
     report(app, "split", "running", "Đang ngắt câu.");
+    let cues = super::speech_plan::group_fragments(cues);
     let mut lines = Vec::new();
     for (index, cue) in cues.iter().enumerate() {
         stopped(cancel)?;

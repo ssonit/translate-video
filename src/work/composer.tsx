@@ -60,7 +60,7 @@ export function Composer({
   onPreview,
   queue,
   onRun,
-  onLive,
+  onOpen,
   lock,
   onTools,
   onChanged,
@@ -115,7 +115,7 @@ export function Composer({
   onPreview: () => void;
   queue: QueueJob[];
   onRun: () => void;
-  onLive: () => void;
+  onOpen: () => void;
   // Dòng báo thiếu mục bắt buộc. Trống thì không khóa.
   lock: string;
   onTools: () => void;
@@ -146,7 +146,7 @@ export function Composer({
   const hasSource =
     mode === "file" ? composeVideo !== "" : composeLink.trim() !== "";
   const needsKey = !skipTranslate && pending !== "";
-  const canRun = hasSource && folder !== "" && !captioning && !running && !needsKey;
+  const canOpen = hasSource && folder !== "" && !captioning && !running;
   // Thiếu mục bắt buộc thì khóa các nút chạy. Chọn video, đổi dịch vụ, bật server vẫn làm được.
   const locked = lock !== "";
 
@@ -483,11 +483,7 @@ export function Composer({
               ? "Nghe từng đoạn trong lúc dịch, xuất audio khi đã xong."
               : "Xem trước trong lúc dịch. Khi xuất, app sẽ kiểm tra tên và căn lại thời gian giọng đọc."}
         </p>
-        <p className="preview-hint">{textOnly
-          ? "Xem trước chưa áp dụng sửa tên, thuật ngữ, khung xuất và kiểu chữ đã chọn."
-          : audioOnly
-            ? "Nghe trước chưa qua kiểm tra tên và thuật ngữ như khi xuất audio."
-            : "Xem trước chưa áp dụng sửa tên, thuật ngữ, co độ dài, khung xuất và kiểu chữ; giọng và phụ đề có thể khác bản xuất."}</p>
+        <p className="preview-hint">Mở nguồn để xem và sửa nháp trước. Chữ và giọng chỉ chuẩn bị ở vùng yêu cầu; bấm Xuất khi muốn nhận file đầy đủ. Chạy toàn bộ xử lý thẳng cả nguồn theo cấu hình này.</p>
         <p className="output-summary">
           {textOnly ? "Video phụ đề" : audioOnly ? "Audio" : "Video lồng tiếng"} · {languageName(target)}
           {!textOnly && voice ? ` · ${voice}` : ""}
@@ -512,10 +508,10 @@ export function Composer({
           <button
             type="button"
             className="link preview-action"
-            onClick={() => void onLive()}
-            disabled={locked || !canRun}
+            onClick={onOpen}
+            disabled={!canOpen}
           >
-            {audioOnly ? "Nghe trước" : "Xem trước"}
+            Mở nguồn & sửa nháp
           </button>
           <button
             type="button"
@@ -540,7 +536,7 @@ export function Composer({
                 ? "Thêm video"
                 : "Thêm vào hàng"
               : hasSource || queue.length === 0
-                ? "Chạy"
+                ? "Chạy toàn bộ"
                 : `Chạy hàng (${queue.length})`}
           </button>
         </span>

@@ -4,6 +4,8 @@ App desktop để chọn một video trên máy, tách tiếng, chép lời, d�
 
 Mở **Hướng dẫn** trên thanh điều hướng trong app để xem cách chuẩn bị máy, lồng video đầu tiên, sửa lời và xuất kết quả.
 
+**Mở nguồn & sửa nháp** mở video gốc trước; **Lấy lời gốc**, **Bản dịch** và **Giọng lồng** chỉ chạy phần bạn yêu cầu. Dịch/giọng nạp trước khoảng 30 giây, tua ưu tiên vùng mới. **Lưu nháp** không dựng MP4; **Nghe câu** tạo lại câu bị sửa; **Xuất video/audio** hoàn tất phần thiếu và xuất bất kỳ lúc nào. **Chạy toàn bộ** và hàng đợi vẫn xử lý thẳng cả nguồn. [Chi tiết triển khai](docs/trien-khai-khi-can-dot-4-2026-10-29.md) · [Kết quả kiểm chứng và giới hạn](docs/nghiem-thu-khi-can-2026-10-29.md).
+
 ## Luồng
 
 1. FFmpeg tách tiếng.
@@ -42,11 +44,23 @@ Mỗi video có một folder việc trong folder kết quả, đặt theo tên v
 
 Folder kết quả mặc định là `output/` ở gốc project (app tự tạo, đổi được bằng nút "Đổi folder"). Ví dụ `output/tap 1/tap 1.vi.mp4`.
 
-Bước nào đã có file thì lần chạy sau bỏ qua. Bản dịch lưu sau từng cụm nên dừng giữa chừng vẫn dịch tiếp được. Muốn làm lại bước nào thì xóa file của bước đó.
+Lời dịch và thuật ngữ được dùng lại khi dấu xác nhận còn khớp nguồn, cấu hình và nội dung đã lưu; WAV từng câu cũng được đối chiếu lời đọc/giọng và SHA-256 khi cần dựng lại. Bản dịch lưu sau từng cụm nên dừng giữa chừng vẫn dịch tiếp phần thiếu. Cache cũ chưa có dấu xác nhận có thể được cất vào `cache-stale/` rồi làm lại một lần; bản xuất cũ giữ trong lịch sử. Chi tiết: [nháp và xác minh cache](docs/trien-khai-khi-can-dot-3-2026-10-29.md).
+
+Mỗi thời điểm chỉ một tác vụ xử lý giữ quyền ghi. Bấm **Dừng** ngừng phát preview ngay và yêu cầu hủy; nếu đang gọi dịch vụ AI, app giữ trạng thái đang dừng đến khi HTTP hiện tại kết thúc hoặc timeout, rồi mới cho chạy việc kế tiếp. Không còn để request dịch chạy ngầm sau khi đã báo dừng.
 
 Whisper: mục Whisper ở màn chuẩn bị có nút **Tải Whisper**. Một cú bấm: app kiểm tra bản whisper.cpp mới nhất trên GitHub và model trên Hugging Face, chỉ tải phần còn thiếu hoặc cũ hơn (khoảng 475 MB lần đầu), đối chiếu mã băm SHA-256 rồi tự giải nén vào folder `whisper` trong project. Đã đủ và mới nhất thì không tải lại. Tải tay vẫn được: giải nén `whisper-bin-x64.zip` vào folder `whisper` và chép `ggml-small.bin` (hoặc base, medium, large-v3, tiny) vào cùng folder. Nếu `whisper-cli` đã có trong PATH thì dùng luôn, model nằm cạnh nó. Màn chuẩn bị báo rõ thiếu file nào.
 
 Đã kiểm tra bước căn tiếng và ghép bằng WAV/video thật; kết quả benchmark nằm ở `docs/workflow-review.md`. Ngày 28/10/2026 đã chạy trọn luồng với nguồn local 75 giây qua Whisper → DeepSeek local → Piper → video 9:16 có chữ, kiểm tra dừng/chạy tiếp, đổi kiểu chữ và hàng đợi hai video. Chi tiết và giới hạn ở `docs/e2e-review-2026-10-28.md`; chưa xác nhận trọn luồng qua mọi dịch vụ dịch.
+
+## Giảm thời gian xử lý
+
+Xuất video cần mã hóa hình ưu tiên NVENC trên máy có NVIDIA, tự dùng lại CPU nếu GPU lỗi; ghép tiếng không đổi hình vẫn copy video. Trên video Douyin Full HD 6 phút, phép đo cùng hình/phụ đề giảm phần ghi chữ từ 128,84 xuống 29,70 giây, file lớn hơn khoảng 14%. Bản thử đã sửa riêng bốn câu bị cắt bằng rút lời/chỉnh mốc, báo cáo căn tiếng còn 0 câu bị cắt; [số đo, cách sửa và giới hạn](docs/gpu-va-bon-cau-2026-10-29.md).
+
+Whisper GPU dùng lọc vùng có giọng nói và tránh kéo lỗi nhận dạng từ đoạn trước. Việc mới ghép các mẩu câu sát nhau trước khi dịch; bản dịch lồng video nhận thời lượng từng câu để viết gọn ngay từ đầu. Audio liền mạch giữ đủ lời, không rút gọn theo mốc hình. Câu ngắn bị đứng trong bộ đọc của cửa sổ được thử lại một lần với worker mới. Việc cũ giữ cache; dùng Chép lời lại nếu muốn chia câu theo cách mới. Trên video Douyin đã thử, câu bị cắt giảm từ 41 xuống 4; [kết quả và giới hạn](docs/toi-uu-loi-va-giong-2026-10-29.md).
+
+Video tải mới bằng yt-dlp giữ thêm metadata cạnh file nguồn. Nếu có phụ đề do kênh cung cấp khớp ngôn ngữ gốc và mốc/nội dung phù hợp, app lấy phụ đề đó vào `transcript.json`, bỏ qua tách tiếng và Whisper. Xem trước và xuất dùng chung cache này. Thiếu metadata, không rõ ngôn ngữ gốc, chỉ có phụ đề tự động, phụ đề không phù hợp hoặc tải phụ đề lỗi thì vẫn dùng Whisper. Không ghi đè lời chép hay lời đã biên tập của việc cũ; file local và video Douyin vẫn theo đường hiện tại.
+
+Khi đọc giọng trong cửa sổ app, sau bước duyệt tên/thuật ngữ, câu dịch đã lưu được đưa sang một tác vụ đọc giọng trong lúc lô tiếp theo còn đang dịch. Hàng chờ giới hạn hai lô; giọng giữ nguyên trong worker, mỗi câu chỉ đưa sang một lần. Câu còn chờ dịch lại chưa được tạo WAV im lặng. Lỗi/hủy dừng cả hai tác vụ và giữ phần đã lưu để chạy tiếp. Piper native vẫn nhận cả lô trong một tiến trình để tránh nạp lại model. `timing.log` ghi thời gian chồng nhau ở mục `translate+speak`; bước đọc giọng sau đó vẫn kiểm tra/rút gọn câu dài như trước. Đã có [số đo thử trên video Douyin](docs/thu-toc-do-douyin-2026-10-29.md), kèm giới hạn do câu trả lời model thay đổi; xem thêm [phạm vi kiểm chứng](docs/tang-toc-xu-ly-2026-10-29.md).
 
 ## Chạy
 

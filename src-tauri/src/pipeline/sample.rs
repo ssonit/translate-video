@@ -2,7 +2,7 @@ use super::assemble::{merge_picture, picture_has_audio, subtitle_filter, write_v
 use super::fit_batch::{FitBatch, FIT_BATCH_LINES};
 use super::media::{media_duration, write_srt};
 use crate::job::{read_json, Job, TranslatedLine};
-use crate::timeline::{place_all, Slot};
+use crate::timeline::place_all;
 use crate::wav::{mix_at, read_wav, resample_linear, write_wav, Pcm};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -32,22 +32,17 @@ pub(super) fn voice_excerpt(
     dir: &Path,
     cancel: &AtomicBool,
 ) -> Result<(PathBuf, Vec<crate::audio_mix::VoiceSpan>), String> {
-    let mut slots = Vec::new();
+    let slots = super::demand::speech_slots(job, lines)?;
     let mut rate = 22050;
     for (i, line) in lines.iter().enumerate() {
         super::stopped(cancel)?;
-        let pcm = read_wav(&job.line_wav(i + 1)).map_err(|_| {
-            format!(
-                "Thiếu tiếng câu {}. Chạy lồng tiếng để đọc đủ trước khi xem thử bản xuất.",
-                i + 1
-            )
-        })?;
-        rate = pcm.rate;
-        slots.push(Slot {
-            start: line.start,
-            end: line.end,
-            wav_secs: pcm.samples.len() as f64 / f64::from(pcm.rate),
-        });
+        let required = line.start < start + seconds && line.end > start;
+        let pcm = match if slots[i].wav_secs > 0.0 {read_wav(&job.line_wav(i + 1))}else{Err("Chưa có tiếng hợp lệ.".into())} {
+            Ok(pcm) => Some(pcm),
+            Err(_) if !required => None,
+            Err(_) => return Err(format!("Thiếu tiếng câu {} trong đoạn thử. Chuẩn bị lại đoạn này.", i+1)),
+        };
+        if let Some(pcm)=&pcm {rate=pcm.rate;}
     }
     let placements = place_all(&slots, media_duration(&merge_picture(job)?, cancel)?);
     let picked: Vec<_> = placements
@@ -118,7 +113,8 @@ pub(crate) fn export(
     let lines = crate::timing::read(&job.root)?;
     let saved = crate::render::RenderSettings::read(&job.root)?;
     if !text_only
-        && lines.iter().any(|l| {
+        && super::demand::selected(&lines,start,start+seconds,true).iter().any(|&i| {
+            let l=&lines[i];
             crate::render::spoken_text(&saved, &job.target, &l.translation)
                 != crate::render::spoken_text(&render, &job.target, &l.translation)
         })
@@ -194,7 +190,8 @@ pub(crate) fn export(
     let (ow, oh) = render.dimensions(w, h);
     let srt = dir.join("sample.srt");
     let overlay = if text_only || burn {
-        write_srt(&srt, &lines)?;
+        let visible:Vec<_>=lines.iter().filter(|l|l.start<start+seconds&&l.end>start).cloned().collect();
+        write_srt(&srt, &visible)?;
         Some(super::captions::prepare_for(&srt, ow, oh, &render)?)
     } else {
         None

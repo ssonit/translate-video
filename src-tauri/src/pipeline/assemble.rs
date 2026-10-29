@@ -711,7 +711,7 @@ pub(super) fn write_video_output(
     let partial = partial_path(out);
     let _ = std::fs::remove_file(&partial);
     command.arg(&partial);
-    let merged = run_ffmpeg_progress(
+    let merged = super::video_encode::run(
         command,
         total,
         Duration::from_secs(60 * 60),
@@ -1080,7 +1080,7 @@ fn burn_file_with(
     if let Some(dir) = srt.parent() {
         command.current_dir(dir);
     }
-    let burned = run_ffmpeg_progress(
+    let burned = super::video_encode::run(
         command,
         total,
         Duration::from_secs(6 * 60 * 60),
@@ -1184,6 +1184,40 @@ mod tests {
 
     use std::process::Stdio;
     use std::sync::atomic::AtomicBool;
+
+    // Explicit opt-in, uses existing local media only; never changes its job/cache.
+    #[test]
+    #[ignore]
+    fn benchmark_local_video_encoders() {
+        let input = PathBuf::from(std::env::var_os("VIDEO_BENCH_INPUT").expect("VIDEO_BENCH_INPUT"));
+        let srt = PathBuf::from(std::env::var_os("VIDEO_BENCH_SRT").expect("VIDEO_BENCH_SRT"));
+        let dir = PathBuf::from(std::env::var_os("VIDEO_BENCH_OUTPUT").expect("VIDEO_BENCH_OUTPUT"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cancel = AtomicBool::new(false);
+        let prepared = super::super::captions::prepare(&input, &srt, &cancel).unwrap();
+        let ass = dir.join("captions.ass");
+        std::fs::copy(&prepared.0, &ass).unwrap();
+        let mut timings = serde_json::Map::new();
+        for gpu in [false, true] {
+            let name = if gpu { "nvenc" } else { "cpu" };
+            let out = dir.join(format!("{name}.mp4"));
+            let mut c = Command::new("ffmpeg");
+            c.args(["-hide_banner", "-loglevel", "error", "-progress", "pipe:1", "-nostats", "-y", "-i"])
+                .arg(&input).args(["-vf", &subtitle_filter("captions.ass"), "-c:v", "libx264", "-preset", "veryfast",
+                    "-threads", "2", "-crf", "20", "-pix_fmt", "yuv420p", "-c:a", "copy", "-movflags", "+faststart"])
+                .arg(&out).current_dir(&dir);
+            let start = std::time::Instant::now();
+            if gpu {
+                super::super::video_encode::run(c, None, Duration::from_secs(1800), &cancel, &mut |_| {}).unwrap();
+            } else {
+                run_ffmpeg_progress(c, None, Duration::from_secs(1800), &cancel, &mut |_| {}).unwrap();
+            }
+            let seconds = start.elapsed().as_secs_f64();
+            eprintln!("{name}: {seconds:.3}s");
+            timings.insert(name.into(), serde_json::json!({"seconds": seconds, "bytes": std::fs::metadata(out).unwrap().len()}));
+        }
+        write_json(&dir.join("timings.json"), &timings).unwrap();
+    }
 
     #[test]
     fn fit_filter_chain_is_plain_when_nothing_to_do() {

@@ -2,7 +2,7 @@
 // speaks them with the Piper voice in voices/<language> and sends every wav back to be written here.
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -15,6 +15,11 @@ use crate::wav::{write_wav, Pcm};
 const FIRST_LINE_WAIT: Duration = Duration::from_secs(180);
 const NEXT_LINE_WAIT: Duration = Duration::from_secs(120);
 
+fn next_session() -> String {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed).to_string()
+}
+
 #[derive(Clone, Serialize)]
 struct Item {
     index: usize,
@@ -23,6 +28,7 @@ struct Item {
 
 #[derive(Clone, Serialize)]
 struct Ask {
+    session: String,
     voice: String,
     lang: String,
     whole: bool,
@@ -31,11 +37,56 @@ struct Ask {
 
 #[derive(Default)]
 struct Pending {
+    session: String,
     done: Option<mpsc::Sender<Result<(), String>>>,
     prepared: Option<mpsc::Sender<Result<Vec<(usize, Vec<String>)>, String>>>,
     paths: HashMap<usize, PathBuf>,
+    tickets: HashMap<usize, crate::draft::SpeechTicket>,
     saved: usize,
     touched: Option<Instant>,
+}
+
+impl Pending {
+    // Keep ownership checked through the file commit. A cancelled request must not
+    // look up the same index in the next job's paths or acknowledge its progress.
+    fn save(&mut self, session: &str, index: usize, pcm: &Pcm) -> Result<(), String> {
+        if self.session != session || self.done.is_none() {
+            return Err("Yêu cầu đọc giọng đã hết hiệu lực.".into());
+        }
+        let path = self.paths.get(&index).ok_or("Câu này không còn chờ ghi tiếng.")?;
+        if let Some(ticket) = self.tickets.get(&index) {
+            crate::draft::commit_speech(ticket, path, pcm)?;
+        } else {
+            write_wav(path, pcm)?;
+        }
+        self.paths.remove(&index);
+        self.tickets.remove(&index);
+        self.saved += 1;
+        self.touched = Some(Instant::now());
+        Ok(())
+    }
+
+    fn finish(&mut self, session: &str, error: Option<String>) {
+        if self.session != session { return; }
+        if let Some(sender) = self.done.take() {
+            let result = match error {
+                Some(message) => Err(message),
+                None if !self.paths.is_empty() => Err("Bộ đọc giọng chưa gửi đủ câu.".into()),
+                None => Ok(()),
+            };
+            let _ = sender.send(result);
+        }
+    }
+
+    fn prepared(&mut self, session: &str, lines: Vec<PreparedLine>, error: Option<String>) {
+        if self.session != session { return; }
+        if let Some(sender) = self.prepared.take() {
+            let _ = sender.send(match error {
+                Some(message) => Err(message),
+                None => Ok(lines.into_iter().map(|line| (line.index, line.chunks)).collect()),
+            });
+        }
+    }
 }
 
 #[derive(Default)]
@@ -48,8 +99,22 @@ impl Bridge {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    fn clear(&self) {
-        *self.lock() = Pending::default();
+    fn clear(&self, session: &str) {
+        let mut pending = self.lock();
+        if pending.session == session {
+            *pending = Pending::default();
+        }
+    }
+
+    pub(crate) fn cancel(&self) {
+        let mut pending = self.lock();
+        if let Some(sender) = pending.done.take() {
+            let _ = sender.send(Err("Đã dừng.".into()));
+        }
+        if let Some(sender) = pending.prepared.take() {
+            let _ = sender.send(Err("Đã dừng.".into()));
+        }
+        *pending = Pending::default();
     }
 }
 
@@ -83,12 +148,22 @@ pub(crate) fn run(
 ) -> Result<(), String> {
     let bridge = app.state::<Bridge>();
     let (sender, receiver) = mpsc::channel();
+    let session = next_session();
+    let mut tickets = HashMap::new();
+    for (index, text, path) in items {
+        if let Some(ticket) = crate::draft::speech_ticket(path, text, lang, voice)? {
+            tickets.insert(*index, ticket);
+        }
+    }
     {
         let mut pending = bridge.lock();
-        if pending.done.is_some() {
+        if cancel.load(Ordering::SeqCst) { return Err("Đã dừng.".into()); }
+        if !pending.session.is_empty() {
             return Err("Đang đọc một yêu cầu khác.".into());
         }
         pending.done = Some(sender);
+        pending.tickets = tickets;
+        pending.session = session.clone();
         pending.paths = items
             .iter()
             .map(|(index, _, path)| (*index, path.clone()))
@@ -97,6 +172,7 @@ pub(crate) fn run(
         pending.touched = Some(Instant::now());
     }
     let ask = Ask {
+        session: session.clone(),
         voice: voice.to_string(),
         lang: lang.to_string(),
         whole,
@@ -109,7 +185,7 @@ pub(crate) fn run(
             .collect(),
     };
     if let Err(error) = app.emit("tts-request", ask) {
-        bridge.clear();
+        bridge.clear(&session);
         return Err(error.to_string());
     }
     let total = items.len();
@@ -135,7 +211,6 @@ pub(crate) fn run(
                     NEXT_LINE_WAIT
                 };
                 if touched.is_some_and(|at| at.elapsed() > limit) {
-                    let _ = app.emit("tts-cancel", ());
                     break Err(
                         "Giao diện không trả lời khi đọc giọng. Hãy giữ cửa sổ app mở.".to_string(),
                     );
@@ -146,7 +221,10 @@ pub(crate) fn run(
             }
         }
     };
-    bridge.clear();
+    bridge.clear(&session);
+    if outcome.is_err() {
+        let _ = app.emit("tts-cancel", &session);
+    }
     outcome
 }
 
@@ -158,6 +236,7 @@ struct CleanItem {
 
 #[derive(Clone, Serialize)]
 struct CleanAsk {
+    session: String,
     lang: String,
     items: Vec<CleanItem>,
 }
@@ -172,14 +251,18 @@ pub(crate) fn prepare(
 ) -> Result<Vec<(usize, Vec<String>)>, String> {
     let bridge = app.state::<Bridge>();
     let (sender, receiver) = mpsc::channel();
+    let session = next_session();
     {
         let mut pending = bridge.lock();
-        if pending.prepared.is_some() {
+        if cancel.load(Ordering::SeqCst) { return Err("Đã dừng.".into()); }
+        if !pending.session.is_empty() {
             return Err("Đang chuẩn hóa một yêu cầu khác.".into());
         }
         pending.prepared = Some(sender);
+        pending.session = session.clone();
     }
     let ask = CleanAsk {
+        session: session.clone(),
         lang: lang.to_string(),
         items: items
             .iter()
@@ -190,7 +273,7 @@ pub(crate) fn prepare(
             .collect(),
     };
     if let Err(error) = app.emit("tts-clean", ask) {
-        bridge.lock().prepared = None;
+        bridge.clear(&session);
         return Err(error.to_string());
     }
     let started = Instant::now();
@@ -213,7 +296,7 @@ pub(crate) fn prepare(
             }
         }
     };
-    bridge.lock().prepared = None;
+    bridge.clear(&session);
     let lines = outcome?;
     let got: std::collections::HashSet<usize> = lines.iter().map(|(index, _)| *index).collect();
     if items.iter().any(|(index, _)| !got.contains(index)) {
@@ -272,11 +355,7 @@ pub(crate) async fn preview_voice(
         let text=text.filter(|s|!s.trim().is_empty()).unwrap_or_else(||preview_text(code).into());
         if text.len()>3000{return Err("Câu thử giọng quá dài.".into());}
         let control=app.state::<crate::DubControl>();
-        if control.running.load(Ordering::SeqCst)||control.captioning.swap(true,Ordering::SeqCst){return Err("Đang xử lý một yêu cầu khác.".into());}
-        struct Busy<'a>(&'a AtomicBool);
-        impl Drop for Busy<'_>{fn drop(&mut self){self.0.store(false,Ordering::SeqCst);}}
-        let _busy=Busy(&control.captioning);
-        if control.running.load(Ordering::SeqCst){return Err("Đang lồng một video.".into());}
+        let _lease=control.tasks.acquire(crate::coordinator::Kind::Auxiliary)?;
         static NEXT:std::sync::atomic::AtomicU64=std::sync::atomic::AtomicU64::new(0);
         let path=std::env::temp_dir().join(format!("voice-preview-{}-{}.wav",std::process::id(),NEXT.fetch_add(1,Ordering::Relaxed)));
         let _file=std::fs::OpenOptions::new().write(true).create_new(true).open(&path).map_err(|e|e.to_string())?;
@@ -284,7 +363,7 @@ pub(crate) async fn preview_voice(
         impl Drop for Temp{fn drop(&mut self){let _=std::fs::remove_file(&self.0);}}
         let _temp=Temp(path.clone());
         drop(_file);
-        let cancel = AtomicBool::new(false);
+        let cancel = &control.cancel;
         let exe = crate::piper::locate();
         let caps = exe.as_ref().and_then(|path| crate::piper::read_caps(path));
         if crate::piper::choose_engine(exe.clone(), caps) == crate::piper::SpeakEngine::Native {
@@ -370,27 +449,21 @@ pub(crate) fn save_line_wav(bridge: State<'_, Bridge>, request: Request<'_>) -> 
             .and_then(|value| value.parse::<u64>().ok())
     };
     let index = number("index").ok_or("Thiếu số câu.")? as usize;
-    let rate = number("rate").ok_or("Thiếu tần số mẫu.")? as u32;
+    let rate = u32::try_from(number("rate").ok_or("Thiếu tần số mẫu.")?)
+        .map_err(|_| "Tần số mẫu không hợp lệ.")?;
+    let session = request.headers().get("session").and_then(|v| v.to_str().ok())
+        .ok_or("Thiếu mã yêu cầu đọc giọng.")?;
     let InvokeBody::Raw(bytes) = request.body() else {
         return Err("Thiếu dữ liệu âm thanh.".into());
     };
-    let path = bridge
-        .lock()
-        .paths
-        .get(&index)
-        .cloned()
-        .ok_or("Câu này không nằm trong yêu cầu đang đọc.")?;
-    write_wav(
-        &path,
+    if bytes.len() % 2 != 0 { return Err("Dữ liệu âm thanh bị cụt.".into()); }
+    bridge.lock().save(
+        session, index,
         &Pcm {
             rate,
             samples: samples_from_bytes(bytes),
         },
-    )?;
-    let mut pending = bridge.lock();
-    pending.saved += 1;
-    pending.touched = Some(Instant::now());
-    Ok(())
+    )
 }
 
 #[derive(serde::Deserialize)]
@@ -402,30 +475,16 @@ pub(crate) struct PreparedLine {
 #[tauri::command]
 pub(crate) fn tts_prepared(
     bridge: State<'_, Bridge>,
+    session: String,
     lines: Vec<PreparedLine>,
     error: Option<String>,
 ) {
-    let sender = bridge.lock().prepared.clone();
-    if let Some(sender) = sender {
-        let _ = sender.send(match error {
-            Some(message) => Err(message),
-            None => Ok(lines
-                .into_iter()
-                .map(|line| (line.index, line.chunks))
-                .collect()),
-        });
-    }
+    bridge.lock().prepared(&session, lines, error);
 }
 
 #[tauri::command]
-pub(crate) fn tts_finish(bridge: State<'_, Bridge>, error: Option<String>) {
-    let sender = bridge.lock().done.clone();
-    if let Some(sender) = sender {
-        let _ = sender.send(match error {
-            Some(message) => Err(message),
-            None => Ok(()),
-        });
-    }
+pub(crate) fn tts_finish(bridge: State<'_, Bridge>, session: String, error: Option<String>) {
+    bridge.lock().finish(&session, error);
 }
 
 #[cfg(test)]
@@ -462,5 +521,83 @@ mod tests {
             samples_from_bytes(&[1, 0, 0xff, 0xff, 0x00, 0x80, 7]),
             vec![1, -1, i16::MIN]
         );
+    }
+
+    fn pending_line(path: PathBuf) -> (Pending, mpsc::Receiver<Result<(), String>>) {
+        let (sender, receiver) = mpsc::channel();
+        (Pending {
+            session: "new-job".into(),
+            done: Some(sender),
+            paths: [(1, path)].into_iter().collect(),
+            ..Pending::default()
+        }, receiver)
+    }
+
+    #[test]
+    fn late_pcm_and_finish_cannot_overwrite_or_finish_the_next_job() {
+        let root = scratch("stale-session");
+        let path = root.join("001.wav");
+        fs::write(&path, b"previous checkpoint").unwrap();
+        let (mut pending, receiver) = pending_line(path.clone());
+        let pcm = Pcm { rate: 22050, samples: vec![1, 2, 3] };
+        assert!(pending.save("cancelled-job", 1, &pcm).is_err());
+        pending.finish("cancelled-job", None);
+        assert!(matches!(receiver.try_recv(), Err(mpsc::TryRecvError::Empty)));
+        assert_eq!(fs::read(&path).unwrap(), b"previous checkpoint");
+        assert_eq!(pending.saved, 0);
+        pending.save("new-job", 1, &pcm).unwrap();
+        assert_eq!(crate::wav::read_wav(&path).unwrap().samples, pcm.samples);
+        // A repeated IPC response does not count another sentence as complete.
+        assert!(pending.save("new-job", 1, &pcm).is_err());
+        assert_eq!(pending.saved, 1);
+        pending.finish("new-job", None);
+        assert!(receiver.recv().unwrap().is_ok());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn incomplete_or_invalid_audio_is_not_acknowledged_as_ready() {
+        let root = scratch("invalid-pcm");
+        let path = root.join("001.wav");
+        fs::write(&path, b"keep").unwrap();
+        let (mut pending, receiver) = pending_line(path.clone());
+        for pcm in [Pcm { rate: 0, samples: vec![1] }, Pcm { rate: 22050, samples: vec![] }] {
+            assert!(pending.save("new-job", 1, &pcm).is_err());
+        }
+        assert_eq!(fs::read(&path).unwrap(), b"keep");
+        assert_eq!(pending.saved, 0);
+        pending.finish("new-job", None);
+        assert!(receiver.recv().unwrap().is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cancelling_revokes_paths_and_wakes_the_waiter() {
+        let root = scratch("cancel-session");
+        let path = root.join("001.wav");
+        let (pending, receiver) = pending_line(path.clone());
+        let bridge = Bridge(Mutex::new(pending));
+        bridge.cancel();
+        assert!(receiver.recv().unwrap().is_err());
+        let pcm = Pcm { rate: 22050, samples: vec![1] };
+        assert!(bridge.lock().save("new-job", 1, &pcm).is_err());
+        assert!(!path.exists());
+        // Cleanup from the previous task must not revoke a newer owner.
+        bridge.lock().session = "another-job".into();
+        bridge.clear("new-job");
+        assert_eq!(bridge.lock().session, "another-job");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn late_normalization_cannot_complete_a_new_native_request() {
+        let (sender, receiver) = mpsc::channel();
+        let mut pending = Pending {
+            session: "new-clean".into(), prepared: Some(sender), ..Pending::default()
+        };
+        pending.prepared("old-clean", vec![], Some("old error".into()));
+        assert!(matches!(receiver.try_recv(), Err(mpsc::TryRecvError::Empty)));
+        pending.prepared("new-clean", vec![PreparedLine { index: 7, chunks: vec!["đúng câu".into()] }], None);
+        assert_eq!(receiver.recv().unwrap().unwrap(), vec![(7, vec!["đúng câu".into()])]);
     }
 }

@@ -4,9 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { TtsEngine, type VoiceFiles } from "./engine";
 import type { VoiceConfig } from "./piper";
 import { prepareLine } from "./prepare";
-
-type Item = { index: number; text: string };
-type Request = { voice: string; lang: string; whole?: boolean; items: Item[] };
+import { bridgeRequests, type SpeechRequest } from "./bridgeRequests";
 
 async function fetchVoice(lang: string, name: string): Promise<VoiceFiles> {
   const [model, config] = await Promise.all([
@@ -16,9 +14,9 @@ async function fetchVoice(lang: string, name: string): Promise<VoiceFiles> {
   return { model, config: JSON.parse(new TextDecoder().decode(config)) as VoiceConfig };
 }
 
-async function save(index: number, rate: number, samples: Int16Array) {
+async function save(session: string, index: number, rate: number, samples: Int16Array) {
   const bytes = new Uint8Array(samples.buffer, samples.byteOffset, samples.byteLength);
-  await invoke("save_line_wav", bytes, { headers: { index: String(index), rate: String(rate) } });
+  await invoke("save_line_wav", bytes, { headers: { session, index: String(index), rate: String(rate) } });
 }
 
 function errorText(caught: unknown) {
@@ -31,55 +29,44 @@ function errorText(caught: unknown) {
 export function useTtsBridge() {
   useEffect(() => {
     const engine = new TtsEngine(fetchVoice);
-    let busy = false;
-
-    async function handle(request: Request) {
-      if (busy) {
-        await invoke("tts_finish", { error: "Đang đọc một yêu cầu khác." });
-        return;
-      }
-      busy = true;
-      let error: string | null = null;
-      try {
-        await engine.load(request.lang, request.voice);
-        for (const item of request.items) {
-          const pcm = request.whole
-            ? await engine.speakPassage(item.text, request.lang)
-            : await engine.speak(item.text, request.lang);
-          await save(item.index, pcm.rate, pcm.samples);
-        }
-      } catch (caught) {
-        error = errorText(caught);
-      } finally {
-        busy = false;
-      }
-      await invoke("tts_finish", { error });
-    }
+    let generation = 0;
+    const requests = bridgeRequests(engine,
+      (session, index, pcm) => save(session, index, pcm.rate, pcm.samples),
+      async (session, error) => { await invoke("tts_finish", { session, error }); },
+    );
 
     const warm = listen<{ lang: string; voice: string }>("tts-warm", (event) => {
       void engine.load(event.payload.lang, event.payload.voice).catch(() => {});
     });
-    const request = listen<Request>("tts-request", (event) => void handle(event.payload));
-    const cancel = listen("tts-cancel", () => engine.stop());
-    const clean = listen<{ lang: string; items: { index: number; text: string }[] }>("tts-clean", (event) => {
+    const request = listen<SpeechRequest>("tts-request", (event) => void requests.handle(event.payload).catch(console.error));
+    const cancel = listen<string | null>("tts-cancel", (event) => {
+      if (!event.payload) generation += 1;
+      requests.cancel(event.payload);
+    });
+    const clean = listen<{ session: string; lang: string; items: { index: number; text: string }[] }>("tts-clean", (event) => {
+      const mine = generation;
+      const session = event.payload.session;
       void (async () => {
         try {
           const lines = [];
           for (const item of event.payload.items) {
+            if (mine !== generation) return;
             lines.push({ index: item.index, chunks: await prepareLine(item.text, event.payload.lang) });
           }
-          await invoke("tts_prepared", { lines });
+          if (mine !== generation) return;
+          await invoke("tts_prepared", { session, lines });
         } catch (caught) {
-          await invoke("tts_prepared", { lines: [], error: errorText(caught) });
+          await invoke("tts_prepared", { session, lines: [], error: errorText(caught) });
         }
-      })();
+      })().catch(console.error);
     });
     return () => {
+      generation += 1;
       void warm.then((stop) => stop());
       void request.then((stop) => stop());
       void cancel.then((stop) => stop());
       void clean.then((stop) => stop());
-      engine.stop();
+      requests.cancel();
     };
   }, []);
 }

@@ -1,6 +1,8 @@
 import { ask } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { DraftStudio } from "./work/DraftStudio";
+import type { DraftView } from "./work/demand";
 import { StudioNav } from "./work/StudioNav";
 import { ConfigHelp } from "./work/ConfigHelp";
 import { UserGuide } from "./work/UserGuide";
@@ -17,7 +19,7 @@ import { AgainPane } from "./work/againPane";
 import { Composer } from "./work/composer";
 import { useWorkEffects } from "./work/effects";
 import { watchDataKey, watchMediaKey } from "./work/watchLoad";
-import { fileName, isCaptioned, overallEstimate, plainVideo, sameFile } from "./work/format";
+import { fileName, isCaptioned, jobFolder, overallEstimate, plainVideo, sameFile } from "./work/format";
 import { jobActions } from "./work/job";
 import { Library } from "./work/library";
 import { NameForm } from "./work/names";
@@ -50,6 +52,38 @@ export default function Work({
   onReloadModels: () => void;
 }) {
   const s = useWorkState();
+  const [draftRoot, setDraftRoot] = useState(() => localStorage.getItem("active-draft-root") || "");
+  const [draftInitial, setDraftInitial] = useState<DraftView | null>(null);
+  const [draftBusy, setDraftBusy] = useState("");
+  const [draftSetup, setDraftSetup] = useState<SetupSummary | null>(null);
+  const draftGuard = useRef<(() => Promise<boolean>) | null>(null);
+  const registerDraftGuard = useCallback((guard: (() => Promise<boolean>) | null) => { draftGuard.current = guard; }, []);
+  const draftActivity = useCallback((label: string) => {
+    setDraftBusy(label); s.ownsRun.current = !!label; s.setRunning(!!label);
+  }, [s.ownsRun, s.setRunning]);
+  const draftOptions = () => ({ target:s.target,voice:s.voice,provider:s.provider,model:s.model,audioOnly:s.audioOnly,textOnly:s.textOnly,burn:s.burnCaptions,skipTranslate:s.skipTranslate,useTerms:s.useTerms,render:s.render });
+  async function enterDraft(root: string) {
+    if (draftBusy || s.running || s.captioning) return;
+    if (draftGuard.current && !await draftGuard.current()) return;
+    draftActivity("Đang mở nháp…");
+    try {
+      const initial=await invoke<DraftView>("open_draft",{source:root,outputDir:s.folder,isLink:false,options:draftOptions()});
+      setDraftRoot(root); setDraftInitial(initial); localStorage.setItem("active-draft-root", root); s.setView("new");
+    } catch(e) {s.setError(String(e));} finally {draftActivity("");}
+  }
+  async function openSource() {
+    if (s.running || s.captioning) return;
+    draftActivity("Đang mở nguồn…"); s.setError("");
+    try {
+      const next = await invoke<DraftView>("open_draft", {
+        source: s.mode === "file" ? s.composeVideo : s.composeLink,
+        outputDir: s.folder, isLink: s.mode === "link",
+        options: draftOptions(),
+      });
+      setDraftRoot(next.root); setDraftInitial(next); localStorage.setItem("active-draft-root", next.root);
+    } catch (e) { s.setError(String(e)); }
+    finally { draftActivity(""); }
+  }
   const listenOptions = useRef({ target: s.target, voice: s.voice, skipTranslate: s.skipTranslate });
   if (s.view === "parts") listenOptions.current = { target: s.target, voice: s.voice, skipTranslate: s.skipTranslate };
   const [configTab, setConfigTab] = useState<"visual" | "audio" | "sample">("visual");
@@ -62,6 +96,7 @@ export default function Work({
   const textDraft = useRef(false);
   const reportTextDraft = (active: boolean) => { textDraft.current = active; };
   async function confirmDiscard() {
+    if (draftGuard.current && !await draftGuard.current()) return false;
     if (!textDraft.current && Object.keys(s.picks).length === 0) return true;
     return ask("Video đang mở có nháp lời hoặc mốc chưa xuất. Tiếp tục sẽ bỏ những thay đổi này. Bạn có thể quay về Video đang mở để xuất trước.", {
       title: "Thay đổi chưa xuất", kind: "warning", okLabel: "Bỏ nháp và tiếp tục", cancelLabel: "Giữ nháp",
@@ -90,12 +125,12 @@ export default function Work({
   }
   const lock = lockNote(setup);
   const shown = s.playingKept || s.listenFile || s.result;
-  const busyText = s.running
+  const busyText = draftBusy || (s.running
     ? s.downloading
       ? "Đang tải video"
       : s.nameReview ? "Đang chờ bạn kiểm tra tên"
       : `Đang lồng ${s.steps.filter((step) => step.state === "done" || step.state === "skipped").length}/${s.steps.length}`
-    : "";
+    : "");
   useWorkEffects(s, {
     busyText,
     onBusy,
@@ -151,7 +186,7 @@ export default function Work({
           <div className="studio-breadcrumb"><span>Không gian làm việc</span><span aria-hidden="true">/</span>
             <strong>{{ new: "Lồng tiếng", progress: "Hàng đợi", library: "Thư viện", presets: "Bộ cài đặt", configure: "Cấu hình bản xuất", settings: "Cài đặt", help: "Hướng dẫn sử dụng", watch: "Video đang mở", resume: "Chạy tiếp", live: "Xem trước", parts: "Nghe trước" }[s.view]}</strong>
           </div>
-          <div className="mast-actions"><SetupChip summary={setup} onClick={onSetup} /></div>
+          <div className="mast-actions"><SetupChip summary={draftRoot && draftSetup && (s.view === "new" || draftBusy) ? draftSetup : setup} onClick={onSetup} /></div>
         </div>
       </header>
       <div className="stage-body">
@@ -181,8 +216,7 @@ export default function Work({
           isPreview={previewRow}
           onOpenDone={item => void openVideo(item.path)}
           onOpenDraft={(item) => {
-            s.setDraft(item);
-            s.setView("resume");
+            s.setDraft(item); s.setView("resume");
           }}
           onRemove={(item) => void play.removeDub(item)}
         />
@@ -380,6 +414,7 @@ export default function Work({
               onBurn={(checked) => void job.chooseBurn(checked)}
               onNames={(root) => void play.openNames(root)}
               onLeave={() => s.setView("new")}
+              onEdit={() => void enterDraft(jobFolder(s.draft!))}
               onResume={(item) => void confirmDiscard().then(ok => { if (ok) void job.resume(item); })}
               lock={lock}
               onTools={onSetup}
@@ -387,7 +422,13 @@ export default function Work({
           ) : null}
 
           <div className="studio-compose-host" hidden={s.nameEdit || s.view !== "new"}>
-            <Composer
+            {draftRoot ? <DraftStudio key={draftRoot} root={draftRoot} initial={draftInitial}
+              active={s.view === "new" && !s.nameEdit} lock={lock}
+              sourceLock={lockNote({ ...setup, missing: setup.missing.filter(id => id === "ffmpeg" || id === "whisper") })}
+              onTools={onSetup} onActivity={draftActivity} onChanged={onChanged} onGuard={registerDraftGuard} onSetupSummary={setDraftSetup}
+              onBack={() => { setDraftRoot(""); setDraftInitial(null); localStorage.removeItem("active-draft-root"); }}
+              onResult={(path, textOnly) => { s.setResult(path); s.setResultTextOnly(textOnly ?? isCaptioned(path)); s.setResultEpoch(n => n + 1); s.setView("watch"); }}
+            /> : <Composer
               queueTools={<p className="key-note">{s.queue.length} video đang chờ · <button type="button" className="link" onClick={() => s.setView("progress")}>Mở hàng đợi</button></p>}
               styleEditor={<><div className="studio-preset-quick"><label>Bộ cài đặt<select aria-label="Áp dụng nhanh bộ cài đặt" value="" disabled={s.running || s.captioning || s.presetApplying} onChange={event => { const preset = s.presets.find(p => p.id === event.target.value); if (preset) void job.applyPreset(preset).then(onChanged); }}><option value="">Lựa chọn hiện tại</option>{s.presets.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label><button type="button" className="link" onClick={() => s.setView("presets")}>Quản lý bộ</button></div>
                 <div className="studio-config-entry">
@@ -445,11 +486,11 @@ export default function Work({
               onPreview={() => void play.previewVoice()}
               queue={s.queue}
               onRun={() => void confirmDiscard().then(ok => { if (ok) void job.run(); })}
-              onLive={() => void job.runLive()}
+              onOpen={() => void openSource()}
               lock={lock}
               onTools={onSetup}
               onChanged={onChanged}
-            />
+            />}
           </div>
           <div className="studio-config-page" hidden={s.view !== "configure" || s.nameEdit}>
             <div className="pane-scroll studio-page">

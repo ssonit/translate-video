@@ -79,12 +79,12 @@ pub(crate) fn read_wav(path: &Path) -> Result<Pcm, String> {
 }
 
 pub(crate) fn write_wav(path: &Path, pcm: &Pcm) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    if pcm.rate == 0 || pcm.rate > u32::MAX / 2 || pcm.samples.is_empty()
+        || pcm.samples.len() > (u32::MAX as usize - 36) / 2
+    {
+        return Err("Dữ liệu WAV không hợp lệ.".into());
     }
-    let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, encode_wav(pcm)).map_err(|error| error.to_string())?;
-    std::fs::rename(&tmp, path).map_err(|error| error.to_string())
+    crate::atomic_file::write(path, &encode_wav(pcm))
 }
 
 // Audio nghe truyện: nối các câu thành một mạch. Hơi ngắn giữa câu, nghỉ lâu hơn khi

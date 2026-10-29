@@ -53,6 +53,8 @@ function statusText(update: WatchUpdate, hold: boolean): string {
 
 export default function WatchLive({ update, listen, onStop, onExport, active = true }: Props) {
   const mediaRef = useRef<HTMLMediaElement>(null);
+  const [stopping, setStopping] = useState(false);
+  useEffect(() => { setStopping(false); }, [update.video, update.running]);
   const bindMedia = useCallback((node: HTMLMediaElement | null) => {
     mediaRef.current = node;
   }, []);
@@ -287,6 +289,17 @@ export default function WatchLive({ update, listen, onStop, onExport, active = t
     apply();
   }
 
+  function stopPreview() {
+    userPaused.current = true;
+    wants.current = false;
+    clockPlaying.current = false;
+    mediaRef.current?.pause();
+    audioRef.current?.pause();
+    setPlaybackPaused(true);
+    setStopping(true);
+    onStop();
+  }
+
   const headless = listen && update.video === "";
   const showActions = update.running || update.published;
 
@@ -294,7 +307,7 @@ export default function WatchLive({ update, listen, onStop, onExport, active = t
     <div className={listen ? "live is-listen" : "live"}>
       <div className="live-head">
         <strong>{listen ? "Nghe trước" : "Xem trước"}</strong>
-        {blocked ? null : <p className="live-status">{status}</p>}
+        {blocked ? null : <p className="live-status">{stopping ? "Đang dừng, chờ bộ xử lý hiện tại kết thúc." : status}</p>}
       </div>
       {blocked ? (
         <div className="live-missing">
@@ -367,8 +380,8 @@ export default function WatchLive({ update, listen, onStop, onExport, active = t
       {showActions ? (
         <div className="live-actions">
           {update.running ? (
-            <button type="button" className={update.published ? "link" : "check"} onClick={onStop}>
-              Dừng
+            <button type="button" className={update.published ? "link" : "check"} disabled={stopping} onClick={stopPreview}>
+              {stopping ? "Đang dừng…" : "Dừng"}
             </button>
           ) : null}
           {update.published ? (

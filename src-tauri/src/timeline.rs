@@ -31,9 +31,9 @@ pub(crate) fn room(slots: &[Slot], index: usize, total_secs: f64) -> f64 {
     (limit_end(slots, index, total_secs) - slots[index].start.max(0.0)).max(MIN_ROOM)
 }
 
-/// The spoken line is longer than its slot at natural speed, so the words should be rewritten.
+/// Rewrite only when the existing gentle speed adjustment cannot fit the line.
 pub(crate) fn too_long(wav_secs: f64, room_secs: f64) -> bool {
-    wav_secs.is_finite() && wav_secs > room_secs
+    wav_secs.is_finite() && wav_secs > room_secs * MAX_SPEED
 }
 
 pub(crate) fn place_all(slots: &[Slot], total_secs: f64) -> Vec<Placement> {
@@ -145,10 +145,12 @@ mod tests {
     }
 
     #[test]
-    fn too_long_means_natural_speed_does_not_fit() {
+    fn too_long_means_gentle_speed_adjustment_cannot_fit() {
         assert!(too_long(1.2, 1.0));
         assert!(!too_long(1.0, 1.0));
         assert!(!too_long(0.95, 1.0));
+        assert!(!too_long(1.05, 1.0));
+        assert!(!too_long(1.08, 1.0));
         assert!(!too_long(f64::NAN, 1.0));
     }
 }

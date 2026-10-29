@@ -51,6 +51,7 @@ export function ResumePane({
   onNames,
   onLeave,
   onResume,
+  onEdit,
   lock,
   onTools,
 }: {
@@ -66,6 +67,7 @@ export function ResumePane({
   onNames: (root: string) => void;
   onLeave: () => void;
   onResume: (item: FinishedDub) => void;
+  onEdit: () => void;
   // Dòng báo thiếu mục bắt buộc. Trống thì không khóa.
   lock: string;
   onTools: () => void;
@@ -113,6 +115,7 @@ export function ResumePane({
       <footer className="pane-foot">
         <LockedNote note={lock} onTools={onTools} />
         <span className="foot-actions">
+          <button type="button" className="link" onClick={onEdit} disabled={running || captioning}>Mở nháp & sửa</button>
           <button type="button" className="link" onClick={() => void onNames(jobFolder(draft))} disabled={running}>
             Sửa tên
           </button>

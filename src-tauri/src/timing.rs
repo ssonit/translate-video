@@ -118,7 +118,8 @@ pub(crate) fn write_words(root: &Path, lines: &[TranslatedLine]) -> Result<(), S
         return Err("Số câu đã đổi khi lưu lời đọc.".into());
     }
     saved.restore_base(&mut next);
-    write_json(&root.join("translation.json"), &next)
+    write_json(&root.join("translation.json"), &next)?;
+    crate::text_cache::accept_words(root, &next)
 }
 
 pub(crate) fn revision(root: &Path) -> Result<String, String> {
@@ -132,6 +133,7 @@ pub(crate) fn revision(root: &Path) -> Result<String, String> {
         "render.json",
         "names.json",
         "source.json",
+        "draft-options.json",
     ] {
         digest.update(name.as_bytes());
         match std::fs::read(root.join(name)) {

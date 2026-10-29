@@ -5,7 +5,7 @@ use tauri::AppHandle;
 
 use crate::job::{file_ready, Job, TranslatedLine};
 use crate::ollama::{
-    complete, shorten_batch_prompt, shorten_batch_texts, shorten_percent, CHUNK_LINES,
+    complete, shorten_batch_prompt, shorten_batch_texts, shorten_percent, wrong_language, CHUNK_LINES,
 };
 use crate::speech::{clean_for_speech, is_speakable};
 use crate::timeline::{room, too_long, Slot};
@@ -18,17 +18,27 @@ use super::{log_line, report, report_progress, stopped};
 
 const MAX_SHORTEN_ROUNDS: usize = 2;
 
+fn job_voice(app: &AppHandle, job: &Job) -> Result<String, String> {
+    if job.settings_path().exists() {
+        let settings: super::RunSettings = crate::job::read_json(&job.settings_path())?;
+        if settings.target != job.target || settings.voice.is_empty() { return Err("Cấu hình giọng của nháp không hợp lệ.".into()); }
+        return Ok(settings.voice);
+    }
+    crate::selected_voice(app, &job.target)
+}
+
 pub(super) fn speak(
     app: &AppHandle,
     job: &Job,
     lines: &mut Vec<TranslatedLine>,
     choice: &crate::TranslationChoice,
     target: &str,
-    _audio_only: bool,
+    audio_only: bool,
     keep_words: bool,
     cancel: &AtomicBool,
 ) -> Result<(), String> {
-    if file_ready(&job.result()) || file_ready(&job.spoken()) {
+    report(app, "speak", "running", "Đang kiểm tra tiếng đã lưu theo nháp.");
+    if crate::draft::prepare_speech_cache(job)? {
         report(app, "speak", "skipped", "Đã có bản dịch, bỏ qua đọc giọng.");
         return Ok(());
     }
@@ -36,7 +46,7 @@ pub(super) fn speak(
     let pending = (1..=total)
         .filter(|index| !file_ready(&job.line_wav(*index)))
         .count();
-    if pending == 0 && keep_words {
+    if pending == 0 && (keep_words || audio_only) {
         report(app, "speak", "skipped", "Đã có tiếng từng câu, bỏ qua.");
         return Ok(());
     }
@@ -44,17 +54,18 @@ pub(super) fn speak(
     if pending > 0 {
         synthesize_missing(app, job, lines, cancel)?;
     }
-    if keep_words {
-        report(app, "speak", "done", "Đã đọc lại lời gốc.");
+    if keep_words || audio_only {
+        report(app, "speak", "done", "Đã đọc đủ lời, giữ nguyên nội dung.");
         return Ok(());
     }
     let video_secs = timeline_secs(&job.video, lines_end(lines), cancel)?;
+    let protected = crate::editing::Editing::load(&job.root)?.map(|doc|doc.cues.iter().map(|c|c.authored||c.keep_speech).collect::<Vec<_>>()).unwrap_or_default();
     let mut touched = pending > 0;
     for round in 1..=MAX_SHORTEN_ROUNDS {
         let slots = read_slots(job, lines)?;
         let long: Vec<usize> = (0..total)
             .filter(|&i| {
-                !lines[i].translation.trim().is_empty()
+                !protected.get(i).copied().unwrap_or(false) && !lines[i].translation.trim().is_empty()
                     && too_long(slots[i].wav_secs, room(&slots, i, video_secs))
             })
             .collect();
@@ -100,7 +111,9 @@ pub(super) fn speak(
             stopped(cancel)?;
             for (&i, text) in chunk.iter().zip(texts) {
                 let Some(text) = text else { continue };
-                if text.chars().count() >= lines[i].translation.chars().count() {
+                if text.chars().count() >= lines[i].translation.chars().count()
+                    || wrong_language(&text, &job.target)
+                {
                     continue;
                 }
                 lines[i].translation = text;
@@ -158,6 +171,13 @@ pub(super) fn synthesize_missing(
             batch.push((index, text, path));
         } else {
             write_silence(&path, cancel)?;
+            if !line.translation.trim().is_empty() {
+                let render = crate::render::RenderSettings::read(&job.root)?;
+                let spoken = crate::render::spoken_text(&render, &job.target, &text);
+                if let Some(ticket) = crate::draft::speech_ticket(&path, &spoken, &job.target, &job_voice(app, job)?)? {
+                    crate::draft::record_existing(&ticket, &path)?;
+                }
+            }
         }
     }
     if batch.is_empty() {
@@ -178,7 +198,7 @@ pub(crate) fn speak_batch(
     }
     let render=crate::render::RenderSettings::read(&job.root)?;
     for (_,text,_) in &mut batch {*text=crate::render::spoken_text(&render,&job.target,text);}
-    let voice = crate::selected_voice(app, &job.target)?;
+    let voice = job_voice(app, job)?;
     report(
         app,
         "speak",
@@ -190,6 +210,9 @@ pub(crate) fn speak_batch(
     let exe = crate::piper::locate();
     let caps = exe.as_ref().and_then(|path| crate::piper::read_caps(path));
     if crate::piper::choose_engine(exe.clone(), caps) == crate::piper::SpeakEngine::Native {
+        let tickets: Vec<_> = batch.iter().map(|(_, text, path)| {
+            crate::draft::speech_ticket(path, text, &job.target, &voice).map(|ticket| (path.clone(), ticket))
+        }).collect::<Result<_, _>>()?;
         let exe = exe.expect("choose_engine Native chỉ khi có exe");
         let caps = caps.expect("choose_engine Native chỉ khi có cờ");
         let voice_dir = crate::bundled_voice_dir(&job.target).ok_or("Chưa thấy folder giọng.")?;
@@ -226,7 +249,7 @@ pub(crate) fn speak_batch(
             "running",
             format!("Đang đọc {} câu bằng Piper trên máy.", native_items.len()),
         );
-        if let Err(error) = crate::piper::speak_native(
+        let outcome = crate::piper::speak_native(
             &exe,
             &model,
             &caps,
@@ -242,7 +265,19 @@ pub(crate) fn speak_batch(
                     all_len as f64,
                 );
             },
-        ) {
+        );
+        // Retain receipts for complete sentences even if the native process was
+        // cancelled later. Truncated WAVs remain unverified and are retried.
+        for (path, ticket) in tickets {
+            if let Some(ticket) = ticket {
+                match crate::draft::record_existing(&ticket, &path) {
+                    Ok(false) => { let _ = std::fs::remove_file(&path); },
+                    Err(error) if outcome.is_ok() => return Err(error),
+                    _ => {},
+                }
+            }
+        }
+        if let Err(error) = outcome {
             if crate::piper::after_native(&error) == crate::piper::AfterNative::Stop {
                 return Err(error);
             }
@@ -256,26 +291,55 @@ pub(crate) fn speak_batch(
     if batch.is_empty() {
         return Ok(());
     }
+    speak_in_window(app, job, all_len, &batch, cancel)
+}
+
+// Called only after choosing the window engine, so streaming batches do not
+// probe piper.exe or reload a native model between translation saves.
+pub(super) fn speak_ready(
+    app: &AppHandle,
+    job: &Job,
+    all_len: usize,
+    mut batch: Vec<(usize, String, PathBuf)>,
+    cancel: &AtomicBool,
+) -> Result<(), String> {
+    let render = crate::render::RenderSettings::read(&job.root)?;
+    for (_, text, _) in &mut batch {
+        *text = crate::render::spoken_text(&render, &job.target, text);
+    }
+    speak_in_window(app, job, all_len, &batch, cancel)
+}
+
+fn speak_in_window(
+    app: &AppHandle,
+    job: &Job,
+    all_len: usize,
+    batch: &[(usize, String, PathBuf)],
+    cancel: &AtomicBool,
+) -> Result<(), String> {
+    if batch.is_empty() { return Ok(()); }
+    let voice = job_voice(app, job)?;
     let total = batch.len();
-    let already = all_len.saturating_sub(total);
+    let already = (1..=all_len).filter(|&index| file_ready(&job.line_wav(index))).count();
+    report(app, "speak", "running", format!("Đang đọc {total} câu đã dịch."));
     crate::tts::run(
         app,
         &voice,
         &job.target,
-        &batch,
+        batch,
         false,
         cancel,
         &|done, _| {
             report_progress(
                 app,
                 "speak",
-                format!("Đã đọc {done}/{total} câu."),
+                format!("Đã đọc {}/{all_len} câu.", already + done),
                 (already + done) as f64,
                 all_len as f64,
             );
         },
     )?;
-    for (index, _, path) in &batch {
+    for (index, _, path) in batch {
         if !file_ready(path) {
             return Err(format!("Không đọc được câu {}.", index + 1));
         }
@@ -308,7 +372,7 @@ pub(crate) fn speak_preview(
         return Ok(());
     }
     route_preview(preview_engine())?;
-    let voice = crate::selected_voice(app, &job.target)?;
+    let voice = job_voice(app, job)?;
     let total = batch.len();
     let already = lines_len.saturating_sub(total);
     crate::tts::run(
