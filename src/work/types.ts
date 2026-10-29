@@ -109,7 +109,7 @@ export type StructureEdit =
   | { kind: "merge"; revision: string; id: string; next_id: string; source: string; text: string }
   | { kind: "undo"; revision: string };
 
-export type View = "new" | "progress" | "watch" | "live" | "settings" | "resume" | "parts";
+export type View = "new" | "progress" | "watch" | "live" | "settings" | "resume" | "parts" | "library" | "presets" | "configure" | "help";
 
 export type JobSpec = {
   mode: "file" | "link";

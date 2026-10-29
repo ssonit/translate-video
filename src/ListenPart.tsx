@@ -33,12 +33,14 @@ export default function ListenPart({
   voice,
   skipTranslate,
   onBack,
+  active = true,
 }: {
   root: string;
   lang: string;
   voice: string;
   skipTranslate: boolean;
   onBack: () => void;
+  active?: boolean;
 }) {
   const engine = useRef<TtsEngine | null>(null);
   if (!engine.current) engine.current = new TtsEngine(fetchVoice);
@@ -60,6 +62,14 @@ export default function ListenPart({
   const [hasAudio, setHasAudio] = useState(false);
   const [spoken, setSpoken] = useState("");
   const [spokenVoice, setSpokenVoice] = useState("");
+
+  useEffect(() => {
+    if (!active) {
+      paused.current = true;
+      node.current?.pause();
+      setPlaying(false);
+    }
+  }, [active]);
 
   function stopNode() {
     node.current?.pause();
@@ -118,6 +128,7 @@ export default function ListenPart({
     return () => {
       gen.current += 1;
       current?.stop();
+      node.current?.pause();
       for (const url of urls.current) URL.revokeObjectURL(url);
     };
   }, []);

@@ -4,8 +4,8 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { CAPTION_FONTS, DEFAULT_RENDER, type ChannelPreset, type RenderSettings } from "./renderSettings";
 import "./StyleEditor.css";
 
-export function StyleEditor({ value: s, onChange, source, disabled, captions, audioOnly, production, presets, onSave, onApply, onDelete }: {
-  production?: ReactNode; audioOnly: boolean; value: RenderSettings; onChange: (s: RenderSettings) => void; source: string; disabled: boolean; captions: boolean;
+export function StyleEditor({ value: s, onChange, source, disabled, captions, audioOnly, production, standalone = false, presets, onSave, onApply, onDelete }: {
+  standalone?: boolean; production?: ReactNode; audioOnly: boolean; value: RenderSettings; onChange: (s: RenderSettings) => void; source: string; disabled: boolean; captions: boolean;
   presets: ChannelPreset[]; onSave: (name: string) => void; onApply: (p: ChannelPreset) => void; onDelete: (id: string) => void;
 }) {
   const [file, setFile] = useState("");
@@ -60,15 +60,15 @@ export function StyleEditor({ value: s, onChange, source, disabled, captions, au
       if (typeof selected === "string") setFile(selected);
     } catch (e) { setNote(String(e)); }
   }
-  return <details className="style-editor">
+  return <details className={standalone ? "style-editor is-standalone" : "style-editor"} open={standalone ? true : undefined}>
     <summary><span><strong>{audioOnly ? "Bộ cài đặt cho audio" : "Khung hình & kiểu chữ"}</strong><small>{s.aspect === "original" ? "Giữ khung gốc" : s.aspect} · {s.font} · {presets.length} bộ cài đặt</small></span><span aria-hidden="true">⌄</span></summary>
     <div className="style-body">
-      <div className="style-presets">
+      {!standalone ? <div className="style-presets">
         <label>Bộ cài đặt đã lưu<select disabled={disabled} value="" onChange={(e) => { const p = presets.find((p) => p.id === e.target.value); if (p) onApply(p); }}><option value="">Chọn để áp dụng…</option>{presets.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
         <form onSubmit={(e) => { e.preventDefault(); if (name.trim()) { onSave(name.trim()); setName(""); } }}><input aria-label="Tên bộ cài đặt" placeholder="Tên kênh hoặc phong cách" maxLength={60} value={name} onChange={(e) => setName(e.target.value)} disabled={disabled} /><button className="link" disabled={disabled || !name.trim()}>Lưu bộ mới</button></form>
         {presets.length > 0 && <details><summary>Quản lý bộ đã lưu</summary>{presets.map((p) => <div className="style-preset-row" key={p.id}><span>{p.name}</span><button type="button" className="link" disabled={disabled} onClick={() => onDelete(p.id)}>Xóa</button></div>)}</details>}
         <p className="key-note">Lưu khung, chữ, ngôn ngữ, giọng và loại kết quả hiện tại trên máy.</p>
-      </div>
+      </div> : null}
       {production}
       {audioOnly ? <p className="key-note">Khung hình và kiểu chữ được giữ lại cho lần xuất video. Audio chỉ dùng ngôn ngữ và giọng đã chọn.</p> : <div className="style-layout">
         <div className="style-preview-column">

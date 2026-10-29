@@ -10,6 +10,7 @@ import Work from "./Work";
 import { useTtsBridge } from "./tts/bridge";
 import "./App.css";
 import "./preferences.css";
+import "./work/Studio.css";
 
 type Provider = "local" | CloudChoice["id"];
 

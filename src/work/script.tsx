@@ -1,8 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { pickedEdits } from "./format";
 import { lineWarning, nextFitWarning } from "./fitWarning";
-import { TimingEditor } from "./TimingEditor";
-import type { LineEdit, LinePick, ScriptLine, StructureEdit } from "./types";
+import type { LinePick, ScriptLine } from "./types";
 
 function clock(seconds: number) {
   const total = Math.max(0, Math.floor(seconds));
@@ -70,7 +69,6 @@ function inOpenMenu(node: HTMLMediaElement, event: PointerEvent) {
 }
 
 export function DubScript({
-  resultPath,
   lines,
   videoRef,
   playable,
@@ -79,10 +77,10 @@ export function DubScript({
   audioOnly,
   captionsOnly,
   busy,
-  onRetake,
-  onStructure,
+  onSelect,
+  selected,
+  onEditing,
 }: {
-  resultPath: string;
   lines: ScriptLine[];
   videoRef: RefObject<HTMLMediaElement | null>;
   playable: boolean;
@@ -91,8 +89,9 @@ export function DubScript({
   audioOnly: boolean;
   captionsOnly: boolean;
   busy: boolean;
-  onRetake: (edits: LineEdit[]) => void;
-  onStructure: (action: StructureEdit) => void;
+  onSelect: (index: number) => void;
+  selected: number;
+  onEditing: (editing: boolean) => void;
 }) {
   const [spoken, setSpoken] = useState(-1);
   const scriptRef = useRef<HTMLOListElement>(null);
@@ -105,6 +104,7 @@ export function DubScript({
   const controlsTimer = useRef(0);
   const keptRate = useRef({ rate: 1, src: "" });
   const [editing, setEditing] = useState<number | null>(null);
+  useEffect(() => { onEditing(editing !== null); }, [editing, onEditing]);
   const [draft, setDraft] = useState("");
   const reviewRef = useRef(-1);
   const warnings = useMemo(
@@ -244,6 +244,12 @@ export function DubScript({
     keepLineVisible(list, row);
   }, [spoken]);
 
+  useEffect(() => {
+    const list = scriptRef.current;
+    const row = rowRefs.current[selected];
+    if (list && row && !usingControls.current) { holdScroll(); keepLineVisible(list, row); }
+  }, [selected]);
+
   function onScriptScroll() {
     if (scrollLock.current > 0) return;
     followRef.current = false;
@@ -251,6 +257,7 @@ export function DubScript({
   }
 
   function playLine(index: number) {
+    onSelect(index);
     const node = videoRef.current;
     const line = lines[index];
     if (!node || !line) return;
@@ -291,7 +298,6 @@ export function DubScript({
 
   return (
     <div className="script-wrap">
-      {!audioOnly ? <TimingEditor path={resultPath} lines={lines} picks={picks} onPicks={onPicks} videoRef={videoRef} playable={playable} busy={busy} onStructure={onStructure} /> : null}
       {warningIndexes.length > 0 ? (
         <div className="script-review" role="note" aria-label="Câu cần kiểm tra">
           <p><strong>{warningIndexes.length} câu cần kiểm tra</strong><span>{captionsOnly ? "Xem lại đoạn được đánh dấu; bấm Sửa để bổ sung hoặc rút gọn lời. Cảnh báo độ dễ đọc chỉ là gợi ý." : "Xem lại đoạn được đánh dấu; bấm Sửa để bổ sung, rút gọn lời hoặc chọn Đọc lại. Cảnh báo độ dễ đọc chỉ là gợi ý."}</span></p>
@@ -313,7 +319,7 @@ export function DubScript({
               ref={(node) => {
                 rowRefs.current[index] = node;
               }}
-              className={[index === spoken ? "is-current" : "", pending ? "is-pending" : ""].filter(Boolean).join(" ") || undefined}
+              className={[index === spoken ? "is-current" : "", index === selected ? "is-selected" : "", pending ? "is-pending" : ""].filter(Boolean).join(" ") || undefined}
               aria-current={index === spoken ? "true" : undefined}
             >
               {editing === index ? (
@@ -363,27 +369,7 @@ export function DubScript({
           );
         })}
       </ol>
-      {edits.length > 0 ? (
-        <div className="script-retake">
-          <p>
-            {edits.some(edit => edit.start !== undefined)
-              ? "Đổi riêng mốc giữ tiếng từng câu; xuất lại sẽ căn tiếng và ghi phụ đề theo mốc nháp."
-              : captionsOnly
-              ? "Ghi lại chữ đã sửa lên video."
-              : audioOnly
-                ? "Chỉ đọc lại câu đã sửa, rồi xuất lại audio."
-                : "Chỉ đọc lại câu đã sửa, rồi ghép lại video."}
-          </p>
-          <span>
-            <button type="button" className="link" onClick={() => onPicks({})} disabled={busy}>
-              Bỏ sửa
-            </button>
-            <button type="button" className="check" onClick={() => onRetake(edits)} disabled={busy}>
-              {edits.some(edit => edit.start !== undefined) ? `Xuất lại · ${edits.length} câu đã sửa` : `Tạo lại ${edits.length} câu`}
-            </button>
-          </span>
-        </div>
-      ) : null}
+
     </div>
   );
 }

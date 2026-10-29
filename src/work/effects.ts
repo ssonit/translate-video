@@ -104,8 +104,8 @@ export function useWorkEffects(
     }
     let live = true;
     invoke<FinishedDub[]>("list_dubs", { outputDir: s.folder })
-      .then((items) => live && s.setDubs(items))
-      .catch(() => live && s.setDubs([]));
+      .then((items) => { if (live) { s.setDubs(items); s.setListNote(""); } })
+      .catch(() => { if (live) { s.setDubs([]); s.setListNote("Không đọc được thư viện. Kiểm tra folder kết quả trong Cài đặt hoặc mở lại thư viện."); } });
     return () => {
       live = false;
     };
@@ -113,7 +113,9 @@ export function useWorkEffects(
   }, [s.folder, s.result, s.running, s.listTick]);
 
   useEffect(() => {
-    if (s.view !== "watch" || !s.result) {
+    // The editor remains mounted while navigating. Its data belongs to the
+    // selected result, not to the visible page; keep drafts and timing undo alive.
+    if (!s.result) {
       s.setLines([]);
       s.setKept([]);
       s.setLoadedWatchData("");
@@ -136,7 +138,7 @@ export function useWorkEffects(
       live = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [s.view, s.result, s.resultEpoch, s.listTick, s.listenFile]);
+  }, [s.result, s.resultEpoch, s.listTick, s.listenFile]);
 
   useEffect(() => {
     s.setPlayingKept("");

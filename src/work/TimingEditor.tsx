@@ -11,17 +11,19 @@ type Picks = Record<number, LinePick>;
 type UndoTime = { index: number; start?: number; end?: number; revision?: string };
 type Drag = { id: number; x: number; width: number; span: number; start: number; end: number; mode: "move" | "start" | "end" };
 
-export function TimingEditor({ path, lines, picks, onPicks, videoRef, playable, busy, onStructure }: {
+export function TimingEditor({ path, lines, picks, onPicks, videoRef, playable, busy, onStructure, selectedIndex, onSelected }: {
   path: string; lines: ScriptLine[]; picks: Picks; onPicks: (next: Picks) => void;
   videoRef: RefObject<HTMLMediaElement | null>; playable: boolean; busy: boolean;
   onStructure: (action: StructureEdit) => void;
+  selectedIndex: number; onSelected: (index: number) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [data, setData] = useState<TimelineData | null>(null);
   const [loading, setLoading] = useState(false);
   const [waveLoading, setWaveLoading] = useState(false);
   const [note, setNote] = useState("");
-  const [selected, setSelected] = useState(0);
+  const selected = Math.min(selectedIndex, Math.max(0, lines.length - 1));
+  const setSelected = onSelected;
   const [from, setFrom] = useState(0);
   const [span, setSpan] = useState(20);
   const [startText, setStartText] = useState("");
@@ -68,6 +70,11 @@ export function TimingEditor({ path, lines, picks, onPicks, videoRef, playable, 
     loopRequest.current += 1;
     setStartText(times.start.toFixed(3)); setEndText(times.end.toFixed(3)); setLooping(false);
   }, [selected, times.start, times.end]);
+
+  useEffect(() => {
+    if (times.start < left || times.start >= left + width) setFrom(Math.max(0, times.start - span / 4));
+    // Follow a newly selected script line, while allowing manual timeline panning.
+  }, [selected]);
 
   useEffect(() => { if (Object.keys(picks).length === 0) setUndo([]); }, [picks]);
 
@@ -173,13 +180,13 @@ export function TimingEditor({ path, lines, picks, onPicks, videoRef, playable, 
 
   return <div className="timing-editor">
     <button type="button" className="link timing-toggle" aria-expanded={open} disabled={busy} onClick={() => { loopRequest.current += 1; setOpen(!open); setLooping(false); }}>
-      {open ? "Đóng chỉnh thời gian" : "Chỉnh thời gian câu"}
+      {open ? "Thu gọn timeline" : "Mở timeline · Chỉnh thời gian câu"}
     </button>
     {open ? <div className="timing-panel">
       <p className="timing-hint">Đang xem bản xuất hiện tại. Mốc nháp chỉ đổi hình và tiếng sau khi bấm Xuất lại.</p>
       {loading ? <p role="status">Đang đọc mốc video…</p> : null}
       {data ? <>
-        <label className="timing-select">Câu <select value={selected} disabled={disabled} onChange={e => select(Number(e.target.value))}>
+        <label className="timing-select">Câu <select aria-label="Chọn câu trên timeline" value={selected} disabled={disabled} onChange={e => select(Number(e.target.value))}>
           {lines.map((line, index) => <option key={index} value={index}>{index + 1}. {(picks[index]?.text ?? line.translation).slice(0, 65)}</option>)}
         </select></label>
         <div className="timing-zoom">
@@ -215,17 +222,17 @@ export function TimingEditor({ path, lines, picks, onPicks, videoRef, playable, 
         <div className="timing-fields">
           <label>Bắt đầu (giây)<input type="number" step="0.001" min="0" max={duration} value={startText} disabled={disabled} onChange={e => setStartText(e.target.value)} /></label>
           <label>Kết thúc (giây)<input type="number" step="0.001" min="0" max={duration} value={endText} disabled={disabled} onChange={e => setEndText(e.target.value)} /></label>
-          <button type="button" className="check" disabled={disabled} onClick={() => apply(selected, startText.trim() ? Number(startText) : NaN, endText.trim() ? Number(endText) : NaN)}>Giữ mốc nháp</button>
+          <button type="button" className="check" disabled={disabled} onClick={() => apply(selected, startText.trim() ? Number(startText) : NaN, endText.trim() ? Number(endText) : NaN)}>Lưu mốc nháp</button>
         </div>
         <div className="timing-actions">
-          <button type="button" className="link" disabled={disabled || !playable || !canLoop} onClick={loop}>{looping ? "Dừng lặp" : "Nghe lặp đoạn đang xem"}</button>
+          <button type="button" className="link" disabled={disabled || !playable || !canLoop} onClick={loop}>{looping ? "Dừng lặp" : "Nghe lặp"}</button>
           <button type="button" className="link" disabled={disabled || !undo.length} onClick={() => {
             const previous = undo[undo.length - 1];
             if (previous) onPicks({ ...picks, [previous.index]: { ...(picks[previous.index] ?? { text: lines[previous.index].translation, again: false }), start: previous.start, end: previous.end, revision: previous.revision } });
             setUndo(history => history.slice(0, -1)); setNote("");
           }}>Hoàn tác mốc</button>
         </div>
-        <StructureEditor lines={lines} selected={selected} revision={data.revision} disabled={disabled} pending={pickedEdits(lines, picks).length > 0} videoRef={videoRef} onApply={onStructure} />
+        <details className="structure-tools"><summary>Tách / gộp câu</summary><StructureEditor lines={lines} selected={selected} revision={data.revision} disabled={disabled} pending={pickedEdits(lines, picks).length > 0} videoRef={videoRef} onApply={onStructure} /></details>
         {data.note ? <p className="timing-hint">{data.note}</p> : null}
         {stale ? <p className="error">Dữ liệu đã thay đổi. Mở lại video từ thư viện trước khi sửa tiếp.</p> : null}
       </> : null}

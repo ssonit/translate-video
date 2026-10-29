@@ -1,3 +1,4 @@
+import { LockedNote } from "../SetupChip";
 import { duration, mark, markText, remainingText, stepFraction, stepRemaining, workflowPhases } from "./format";
 import { NameForm } from "./names";
 import type { NameFix, NamesPending, StepView } from "./types";
@@ -28,6 +29,8 @@ export function ProgressPane({
   onSkipCurrent,
   onRunQueue,
   onNew,
+  lock,
+  onTools,
 }: {
   downloading: boolean;
   download: { detail: string; progress: number | null };
@@ -54,6 +57,7 @@ export function ProgressPane({
   onSkipCurrent: () => void;
   onRunQueue: () => void;
   onNew: () => void;
+  lock: string; onTools: () => void;
 }) {
   const activeStep = steps.find((step) => step.state === "running");
   const ran = [`đã chạy ${duration(elapsed)}`, remainingText(remaining), queueCount > 0 ? `còn ${queueCount} trong hàng` : ""]
@@ -163,6 +167,7 @@ export function ProgressPane({
             </details>
           </div>
           <footer className="pane-foot">
+            <LockedNote note={lock} onTools={onTools} />
             {running ? (
               <button type="button" className="check" onClick={() => void onStop()}>
                 Dừng
@@ -170,7 +175,7 @@ export function ProgressPane({
             ) : (
               <span className="foot-actions">
                 {queueCount > 0 ? (
-                  <button type="button" className="check" onClick={() => void onRunQueue()}>
+                  <button type="button" className="check" disabled={!!lock} onClick={() => void onRunQueue()}>
                     Chạy tiếp ({queueCount})
                   </button>
                 ) : null}

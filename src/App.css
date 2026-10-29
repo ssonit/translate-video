@@ -1,28 +1,28 @@
 :root {
-  /* Bảng màu: nền than ấm, ba lớp bề mặt, một màu nhấn hổ phách */
-  --bg: #151412;
-  --surface: #1e1d1a;
-  --raised: #2a2823;
-  --inset: #171613;
-  --line: rgba(241, 233, 220, 0.1);
-  --line-strong: rgba(241, 233, 220, 0.22);
-  --text: #f3ede3;
-  --muted: #b3a99a;
-  --accent: #e7a15a;
-  --accent-hover: #f0b274;
-  --on-accent: #1a1208;
-  --ok: #8fc49a;
-  --ok-bg: rgba(143, 196, 154, 0.14);
-  --warn: #e7b866;
-  --warn-bg: rgba(231, 184, 102, 0.14);
-  --bad: #f09a86;
-  --bad-bg: rgba(240, 154, 134, 0.14);
-  --idle-bg: rgba(241, 233, 220, 0.08);
+  /* Nền than trung tính, chữ dịu và điểm nhấn cam; màu xuất video độc lập. */
+  --bg: #09090b;
+  --surface: #121215;
+  --raised: #1c1c21;
+  --inset: #0e0e11;
+  --line: rgba(244, 244, 245, 0.1);
+  --line-strong: rgba(244, 244, 245, 0.22);
+  --text: #f4f4f5;
+  --muted: #a1a1aa;
+  --accent: #f97316;
+  --accent-hover: #fb923c;
+  --on-accent: #18120c;
+  --ok: #86d6a0;
+  --ok-bg: rgba(134, 214, 160, 0.14);
+  --warn: #f2cb72;
+  --warn-bg: rgba(242, 203, 114, 0.14);
+  --bad: #f28b91;
+  --bad-bg: rgba(242, 139, 145, 0.14);
+  --idle-bg: rgba(244, 244, 245, 0.08);
 
   color: var(--text);
   background: var(--bg);
   font-family: "Be Vietnam Pro", sans-serif;
-  font-size: 14px;
+  font-size: 15px;
   line-height: 1.55;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
@@ -33,7 +33,7 @@
 * {
   box-sizing: border-box;
   scrollbar-width: thin;
-  scrollbar-color: rgba(241, 233, 220, 0.42) transparent;
+  scrollbar-color: rgba(244, 244, 245, 0.42) transparent;
 }
 
 *::-webkit-scrollbar {
@@ -48,12 +48,12 @@
 *::-webkit-scrollbar-thumb {
   border: 3px solid transparent;
   border-radius: 999px;
-  background-color: rgba(241, 233, 220, 0.42);
+  background-color: rgba(244, 244, 245, 0.42);
   background-clip: padding-box;
 }
 
 *::-webkit-scrollbar-thumb:hover {
-  background-color: rgba(231, 161, 90, 0.72);
+  background-color: rgba(249, 115, 22, 0.72);
 }
 
 *::-webkit-scrollbar-button,
@@ -70,9 +70,7 @@
 body {
   margin: 0;
   min-height: 100vh;
-  background:
-    radial-gradient(circle at 12% 0%, rgba(231, 161, 90, 0.1), transparent 30%),
-    var(--bg);
+  background: var(--bg);
 }
 
 button,
@@ -188,36 +186,6 @@ select:disabled {
 
 /* Switch by the actual video metadata and available pane width, not its website. */
 @container video-pane (min-width: 620px) {
-  .watch.has-script:has(video[data-shape="portrait"]) {
-    display: grid;
-    grid-template-columns: minmax(210px, 0.9fr) minmax(280px, 1.1fr);
-    grid-template-rows: auto auto minmax(0, 1fr);
-    column-gap: 18px;
-    row-gap: 8px;
-  }
-
-  .watch.has-script:has(video[data-shape="portrait"]) > .result-head,
-  .watch.has-script:has(video[data-shape="portrait"]) > .versions {
-    grid-column: 1 / -1;
-  }
-
-  .watch.has-script:has(video[data-shape="portrait"]) > .watch-media {
-    grid-column: 1;
-    grid-row: 3;
-    min-height: 0;
-    margin: 0;
-    padding-top: 0;
-  }
-
-  .watch.has-script:has(video[data-shape="portrait"]) > .script-wrap {
-    grid-column: 2;
-    grid-row: 3;
-    height: 100%;
-    min-height: 0;
-    max-height: none;
-    margin: 0;
-  }
-
   .live:has(video[data-shape="portrait"]) {
     grid-template-columns: minmax(210px, 0.9fr) minmax(280px, 1.1fr);
     grid-template-rows: auto minmax(0, 1fr) auto auto;
@@ -1112,7 +1080,7 @@ select:disabled {
 
 .again-picks > label.again-check:has(input:checked) {
   border-color: var(--accent);
-  background: rgba(231, 161, 90, 0.14);
+  background: rgba(249, 115, 22, 0.14);
   color: var(--accent);
 }
 
@@ -1568,7 +1536,7 @@ select:disabled {
 
 .run-options .redo:has(input:checked) {
   border-color: var(--accent);
-  background: rgba(231, 161, 90, 0.14);
+  background: rgba(249, 115, 22, 0.14);
   color: var(--accent);
 }
 
@@ -2142,7 +2110,7 @@ audio.draft-media {
   font-size: 0.82rem;
 }
 .live-lines li.is-current {
-  background: rgba(231, 161, 90, 0.16);
+  background: rgba(249, 115, 22, 0.16);
   box-shadow: inset 3px 0 0 var(--accent);
 }
 .live-actions {
@@ -2299,68 +2267,6 @@ audio.draft-media {
   height: 100vh;
 }
 
-/* Wide landscape players need room beside the script instead of a shallow full-width strip. */
-@container video-pane (min-width: 1000px) {
-  .watch.has-script:has(video[data-shape="landscape"]) {
-    display: grid;
-    grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr);
-    grid-template-rows: auto auto minmax(0, 1fr);
-    column-gap: 18px;
-    row-gap: 8px;
-  }
-
-  .watch.has-script:has(video[data-shape="landscape"]) > .result-head,
-  .watch.has-script:has(video[data-shape="landscape"]) > .versions {
-    grid-column: 1 / -1;
-  }
-
-  .watch.has-script:has(video[data-shape="landscape"]) > .watch-media {
-    grid-column: 1;
-    grid-row: 3;
-    min-height: 0;
-    margin: 0;
-    padding-top: 0;
-  }
-
-  .watch.has-script:has(video[data-shape="landscape"]) > .script-wrap {
-    grid-column: 2;
-    grid-row: 3;
-    height: 100%;
-    min-height: 0;
-    max-height: none;
-    margin: 0;
-  }
-
-}
-
-.watch > .script-wrap {
-  flex: 0 1 auto;
-  min-height: 0;
-  max-height: min(18%, 6.5rem);
-  overflow: hidden;
-}
-
-.watch.has-script > .script-wrap {
-  flex: 1 1 0;
-  min-height: 8.5rem;
-  max-height: none;
-}
-
-.watch.has-script > .script-wrap:has(.script-review) {
-  min-height: min(15rem, 40%);
-}
-
-.watch.is-audio > .result-audio {
-  flex: 0 0 auto;
-}
-
-.watch.is-audio.has-script > .script-wrap,
-.watch.is-joining.has-script > .script-wrap {
-  flex: 1 1 auto;
-  max-height: none;
-  min-height: 120px;
-}
-
 .watch .result-bar {
   min-width: 0;
   margin-top: 10px;
@@ -2477,7 +2383,7 @@ audio.draft-media {
   flex-shrink: 0;
   padding: 12px 14px;
   background: var(--warn-bg);
-  border: 1px solid rgba(231, 184, 102, 0.2);
+  border: 1px solid rgba(242, 203, 114, 0.2);
   border-radius: 12px;
 }
 
@@ -2555,7 +2461,7 @@ audio.draft-media {
 }
 
 .script li.is-current {
-  background: rgba(231, 161, 90, 0.16);
+  background: rgba(249, 115, 22, 0.16);
   box-shadow: inset 3px 0 0 var(--accent);
   border-radius: 10px;
 }
@@ -3103,7 +3009,7 @@ button:not(:disabled):active {
 
 .output-choice:has(input:checked) {
   border-color: var(--accent);
-  background: rgba(231, 161, 90, 0.08);
+  background: rgba(249, 115, 22, 0.08);
 }
 
 .output-choice:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 3px; }
@@ -3123,10 +3029,10 @@ button:not(:disabled):active {
   margin: 0;
 }
 
-.workflow-phases li { min-width: 0; padding: 10px; border-bottom: 2px solid var(--line); color: var(--muted); }
-.workflow-phases li > span { display: block; font-size: 0.8rem; }
-.workflow-phases strong { display: block; font-size: 0.84rem; font-weight: 500; }
-.workflow-phases small { display: block; font-size: 0.75rem; }
+.workflow-phases li { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 10px; border-bottom: 2px solid var(--line); color: var(--muted); }
+.workflow-phases li > span { flex-shrink: 0; font-size: 0.8rem; }
+.workflow-phases strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.84rem; font-weight: 500; }
+.workflow-phases small { margin-left: auto; flex-shrink: 0; white-space: nowrap; font-size: 0.75rem; }
 .workflow-phases li[data-state="running"], .workflow-phases li[data-state="waiting"] { border-color: var(--accent); color: var(--accent); }
 .workflow-phases li[data-state="done"] { border-color: var(--ok); }
 .workflow-phases li[data-state="error"] { border-color: var(--bad); color: var(--bad); }

@@ -34,11 +34,3 @@
 .structure-review .structure-confirm { display: flex; align-items: start; gap: 6px; margin-top: 8px; }
 .structure-confirm input { flex: 0 0 auto; }
 .structure-review .check { font-size: .76rem; padding: 6px 9px; }
-.script-wrap:has(.timing-panel) .script { min-height: 7rem; }
-.watch.has-script > .script-wrap:has(.timing-panel) { flex: 2 1 0; min-height: min(22rem, 50%); }
-@container video-pane (min-width: 620px) {
-  .watch.has-script:has(video[data-shape="portrait"]) > .script-wrap:has(.timing-panel) { min-height: 0; }
-}
-@container video-pane (min-width: 1000px) {
-  .watch.has-script:has(video[data-shape="landscape"]) > .script-wrap:has(.timing-panel) { min-height: 0; }
-}

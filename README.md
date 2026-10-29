@@ -2,6 +2,8 @@
 
 App desktop để chọn một video trên máy, tách tiếng, chép lời, dịch, đọc lại bằng giọng tiếng Việt, rồi ghi video mới vào folder local. Không gửi audio hay video đi. Tên app chưa chốt.
 
+Mở **Hướng dẫn** trên thanh điều hướng trong app để xem cách chuẩn bị máy, lồng video đầu tiên, sửa lời và xuất kết quả.
+
 ## Luồng
 
 1. FFmpeg tách tiếng.
@@ -12,6 +14,7 @@ App desktop để chọn một video trên máy, tách tiếng, chép lời, d�
 
 ## Hiện có
 
+- Giao diện chia Lồng tiếng, Hàng đợi, Thư viện, Bộ cài đặt và Cài đặt; thư viện không còn chiếm cột bên cạnh mọi màn. Hình/chữ, âm thanh và đoạn thử có trang cấu hình riêng. Màn chỉnh sửa có timeline toàn chiều ngang, kéo chia vùng video/lời thoại và thanh xuất giữ trạng thái nháp. Theme than trung tính/cam học cách phân vai màu của Folia. Phạm vi triển khai và kiểm chứng: [Giao diện mới](docs/giao-dien-moi-2026-10-28.md).
 - Mở app là vào thẳng màn lồng tiếng, việc kiểm tra máy chạy ở nền. Kết quả là chip ở góc phải: "Đủ đồ nghề" hoặc "Thiếu Whisper, xem". Thiếu mục bắt buộc thì các nút Chạy bị khóa, kèm dòng báo thiếu gì.
 - Màn chuẩn bị (bấm chip để mở): kiểm tra FFmpeg, Ollama (chỉ cần khi dịch trên máy), model dịch, giọng, Whisper. Mục thiếu thì hiện cách tải. App không tự tải gì, trừ nút "Tải Whisper".
 - `voices/<mã ngôn ngữ>` (`vi`, `en`, `zh`, `ja`, `ko`, `fr`, `de`, `es`, `ru`, `th`, `id`, `pt`): các cặp `.onnx` và `.onnx.json`. Giọng được đọc bằng `onnxruntime-web` và `phonemizer` (espeak-ng WASM) trong Web Worker, kèm bộ chuẩn hóa tiếng Việt (số, ngày, tiền, từ viết tắt) lấy từ project Local-TTS (`src/tts`). Một luồng, khoảng 1,8 lần thời gian thực.
@@ -25,7 +28,7 @@ App desktop để chọn một video trên máy, tách tiếng, chép lời, d�
 - Mỗi video trong hàng đợi giữ dịch vụ, model và tùy chọn thuật ngữ lúc thêm, kể cả khi đổi dịch vụ cho video sau hoặc mở lại app. Key lấy từ nơi lưu key của dịch vụ đó, không lưu trong hàng đợi. Nút **Dùng lựa chọn hiện tại** cập nhật riêng video đang chờ. Hàng cũ chưa có cấu hình dịch sẽ dùng lựa chọn hiện tại lúc bắt đầu, rồi giữ cấu hình đó cho lần thử lại.
 - Tiến độ mặc định gồm bốn giai đoạn, có thể mở chi tiết chín bước. Khi chờ kiểm tra tên, trạng thái hiện cả trong danh sách video; thời gian chờ không tính vào thời gian xử lý, ước tính còn lại hay `timing.log`.
 - Xem trước chưa áp dụng sửa tên, thuật ngữ và co độ dài như khi xuất. App ghi rõ khác biệt này bên cạnh thao tác xem trước.
-- Khung xem bám đúng tỉ lệ thực tế của video, kể cả sau khi xoay. Video dọc và danh sách lời thoại nằm cạnh nhau khi khung đủ rộng; video ngang cũng chia cạnh trên khung lớn để có thêm chiều cao. Khung hẹp xếp lời thoại bên dưới. Tốc độ, tải video và hình trong hình nằm chung trong menu ba chấm ở góc trên của video; nút tự ẩn khi đang phát và chuột rời hình.
+- Khung xem bám đúng tỉ lệ thực tế của video, kể cả sau khi xoay. Màn chỉnh sửa đặt video và lời thoại cạnh nhau khi đủ rộng, có vạch kéo chia diện tích; khung hẹp xếp lời thoại bên dưới. Tốc độ, tải video và hình trong hình nằm chung trong menu ba chấm ở góc trên của video; nút tự ẩn khi đang phát và chuột rời hình.
 - Khi chuyển video, màn giữ trạng thái "Đang mở video…" đến khi kiểm tra mở file, đọc tỉ lệ hình và lấy lời thoại cùng danh sách bản lưu xong, rồi hiện bố cục một lần. Kết quả tải chậm của video đã bỏ qua không thay nội dung đang xem; lỗi đọc file hiện thông báo thay vì giữ màn tải.
 - Khi ghi chữ lên video, app giữ khung hình gốc, tính cỡ chữ theo cạnh ngắn và chừa lề theo tỉ lệ hình. Câu dài hiện lần lượt từng đoạn tối đa hai dòng trong khoảng thời gian của câu, chia thời gian theo độ dài chữ (không phải căn từng từ theo giọng). File SRT, lời dịch và WAV từng câu vẫn giữ nguyên; bố cục mới áp dụng khi xuất bản có chữ mới.
 - Danh sách lời thoại đánh dấu câu chưa có lời, thiếu file tiếng từng câu, bị cắt và mức tăng tốc; nút **Đến câu cần kiểm tra** duyệt lần lượt. Bấm **Sửa** để bổ sung hoặc rút gọn rồi tạo lại các câu đã sửa. Thiếu file tiếng chỉ nói về WAV từng câu để tạo lại, không khẳng định bản xuất bị mất tiếng. Báo cáo cũ vẫn hiện phần bị cắt; mức tăng tốc chỉ có ở bản ghép mới. Audio liền mạch và chế độ chỉ chữ không hiện cảnh báo co giọng; cả hai vẫn báo câu chưa có lời, và không kiểm tra WAV từng câu ở audio liền mạch hay chế độ chỉ chữ.

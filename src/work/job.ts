@@ -686,6 +686,7 @@ export function jobActions(s: Session) {
 
   return {
     chooseQueuePolicy,bulkPreset,retryRecord,skipCurrent,moveQueued:(id:string,delta:number)=>rememberQueue(moveWaiting(s.queueRef.current,id,delta)),
+    renamePreset: (id: string, name: string) => storePresets(s.presets.map(p => p.id === id ? { ...p, name: name.trim().slice(0,60) } : p)),
     chooseRender, savePreset, applyPreset, deletePreset: (id: string) => storePresets(s.presets.filter((p) => p.id !== id)),
     rememberQueue,
     pickVideo,

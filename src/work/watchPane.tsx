@@ -1,5 +1,5 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { useEffect, useState, type RefObject } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type RefObject } from "react";
 import { showListenStop } from "../listenStop";
 import {
   captionedVideo,
@@ -9,7 +9,6 @@ import {
   isListen,
   showAsTextOnly,
   watchHeading,
-  languageName,
   parentFolder,
   plainVideo,
   sameFile,
@@ -17,6 +16,8 @@ import {
 } from "./format";
 import { ResultMedia } from "./media";
 import { DubScript } from "./script";
+import { TimingEditor } from "./TimingEditor";
+import { pickedEdits } from "./format";
 import { VersionHistory } from "./VersionHistory";
 import type { FinishedDub, KeptVersion, LineEdit, LinePick, ScriptLine, StructureEdit } from "./types";
 
@@ -64,6 +65,7 @@ export function WatchPane({
   onShowResult,
   onRetake,
   onStructure,
+  onTextDraft,
 }: {
   shown: string;
   result: string;
@@ -108,7 +110,18 @@ export function WatchPane({
   onShowResult: (path: string) => void;
   onRetake: (edits: LineEdit[]) => void;
   onStructure: (action: StructureEdit) => void;
+  onTextDraft: (active: boolean) => void;
 }) {
+  const [textEditing, setTextEditing] = useState(false);
+  const [split, setSplit] = useState(52);
+  const editor = useRef<HTMLDivElement>(null);
+  const [selected, setSelected] = useState(0);
+  const [tab, setTab] = useState<"script" | "exports">("script");
+  const edits = pickedEdits(lines, picks);
+  const hasScript = !playingKept && lines.length > 0;
+  const blocked = running || captioning || joining;
+  useEffect(() => { onTextDraft(textEditing); }, [textEditing, onTextDraft]);
+  useEffect(() => () => onTextDraft(false), [onTextDraft]);
   const [metadataReady, setMetadataReady] = useState(false);
   const [mediaNote, setMediaNote] = useState("");
   useEffect(() => {
@@ -133,7 +146,9 @@ export function WatchPane({
   ) : null;
   return (
     <div
-      className={["pane-fill watch", waiting ? "is-loading" : "", !playingKept && lines.length > 0 ? "has-script" : "", isAudio(shown) ? "is-audio" : "", joining ? "is-joining" : ""]
+      ref={editor}
+      style={{ "--editor-split": `${split}%` } as CSSProperties}
+      className={["pane-fill watch studio-editor", tab === "exports" ? "shows-exports" : "shows-script", waiting ? "is-loading" : "", !playingKept && lines.length > 0 ? "has-script" : "", isAudio(shown) ? "is-audio" : "", joining ? "is-joining" : ""]
         .filter(Boolean)
         .join(" ")}
       aria-busy={waiting}
@@ -154,14 +169,15 @@ export function WatchPane({
         </strong>
         <span title={shown}>{watched?.title || fileName(isAudio(shown) ? shown : plainVideo(shown))}</span>
       </div>
-      <div className="versions">
-        <div className="version-row">
-          <button type="button" className={playingKept ? "link" : "link is-on"} onClick={onPlayCurrent} disabled={running || captioning || joining}>
-            Đang dùng{watched?.language ? ` · ${languageName(watched.language)}` : ""}
-          </button>
+      <div className="studio-editor-toolbar">
+        <div className="studio-tabs" aria-label="Công cụ video">
+          <button type="button" aria-pressed={tab === "script"} className={tab === "script" ? "is-active" : ""} onClick={() => setTab("script")}>Lời thoại</button>
+          <button type="button" aria-pressed={tab === "exports"} className={tab === "exports" ? "is-active" : ""} onClick={() => setTab("exports")}>Bản xuất · {kept.length}</button>
         </div>
-        {!playingKept ? <button type="button" className="link" title="Âm thanh, cách đọc, logo và chữ" disabled={running || captioning || joining} onClick={onEditExport}>Sửa bản xuất</button> : null}
-        <VersionHistory result={result} shown={shown} items={kept} blocked={running || captioning || joining} onPlay={onPlayKept} onApply={onApplyVersion} onDelete={onDeleteKept} />
+        <div className="studio-editor-config">
+          {playingKept ? <button type="button" className="link" onClick={onPlayCurrent} disabled={blocked}>Về bản đang dùng</button> : <button type="button" className="link" title="Khung hình, chữ, âm thanh và logo" disabled={blocked || textEditing || edits.length > 0} onClick={onEditExport}>Hình ảnh & âm thanh ↗</button>}
+          <span>{playingKept ? "Đang xem bản đã cất" : "Đang xem bản đã xuất"}</span>
+        </div>
       </div>
       <div className="watch-media">
       {playable ? (
@@ -179,6 +195,13 @@ export function WatchPane({
           {isAudio(shown) ? "Dùng nút bên dưới nếu chưa nghe được." : "Dùng nút bên dưới nếu khung video còn trống."}
         </p>
       )}
+      </div>
+      <div className="studio-panel-divider" role="separator" tabIndex={0} aria-label="Độ rộng khung video" aria-orientation="vertical" aria-valuemin={35} aria-valuemax={65} aria-valuenow={split}
+        onKeyDown={event => { if (event.key === "ArrowLeft" || event.key === "ArrowRight") { event.preventDefault(); setSplit(value => Math.max(35, Math.min(65, value + (event.key === "ArrowRight" ? 2 : -2)))); } }}
+        onPointerDown={event => event.currentTarget.setPointerCapture(event.pointerId)}
+        onPointerMove={event => { if (!event.currentTarget.hasPointerCapture(event.pointerId) || !editor.current) return; const box = editor.current.getBoundingClientRect(); setSplit(Math.max(35, Math.min(65, Math.round((event.clientX - box.left) / box.width * 100)))); }}
+        onPointerUp={event => { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); }} />
+      <div className="studio-exports-panel" hidden={tab !== "exports"}>
       <div className="result-bar">
         <div className="result-actions">
           {playingKept ? (
@@ -223,7 +246,7 @@ export function WatchPane({
                     type="button"
                     className="check"
                     onClick={() => void (listenFile ? onShowVideo() : onJoin())}
-                    disabled={joining || running}
+                    disabled={blocked || textEditing || edits.length > 0}
                   >
                     {joining
                       ? joinProgress === null
@@ -245,7 +268,7 @@ export function WatchPane({
                   </button>
                 )}
                 {isAudio(result) || listenFile || captioning || textReady ? null : (
-                  <button type="button" className="check" onClick={() => void onAddCaptions()} disabled={running}>
+                  <button type="button" className="check" onClick={() => void onAddCaptions()} disabled={blocked || textEditing || edits.length > 0}>
                     Thêm chữ vào video
                   </button>
                 )}
@@ -260,7 +283,7 @@ export function WatchPane({
                     </button>
                   </>
                 ) : null}
-                <button type="button" className="link result-again" onClick={() => void onAgain()} disabled={running || joining}>
+                <button type="button" className="link result-again" onClick={() => void onAgain()} disabled={blocked || textEditing || edits.length > 0}>
                   Làm lại
                 </button>
               </div>
@@ -297,6 +320,7 @@ export function WatchPane({
                   <button
                     type="button"
                     className="link"
+                    disabled={blocked || textEditing || edits.length > 0}
                     onClick={() => onShowResult(isCaptioned(result) ? plainVideo(result) : captionedVideo(result))}
                   >
                     {isCaptioned(result) ? "Xem bản không chữ" : "Xem bản có chữ"}
@@ -306,15 +330,15 @@ export function WatchPane({
             </>
           )}
         </div>
-        {mediaNote ? <p className="error">{mediaNote}</p> : null}
-        {openNote ? <p className="error">{openNote}</p> : null}
-        {captionNote ? <p className="error">{captionNote}</p> : null}
-        {error ? <p className="error">{error}</p> : null}
+        <VersionHistory inline result={result} shown={shown} items={kept} blocked={blocked || textEditing || edits.length > 0} onPlay={onPlayKept} onApply={onApplyVersion} onDelete={onDeleteKept} />
       </div>
       </div>
-      {!playingKept && lines.length > 0 ? (
+      <div className="studio-script-panel" hidden={tab !== "script"}>
+      {hasScript ? (
         <DubScript
-          resultPath={result}
+          selected={selected}
+          onSelect={setSelected}
+          onEditing={setTextEditing}
           lines={lines}
           videoRef={mediaRef}
           playable={playable}
@@ -323,10 +347,20 @@ export function WatchPane({
           audioOnly={isAudio(result)}
           captionsOnly={textOnly}
           busy={running || captioning || joining}
-          onRetake={onRetake}
-          onStructure={onStructure}
+
         />
-      ) : null}
+      ) : <div className="studio-empty"><strong>{playingKept ? "Bản đã cất" : "Chưa có lời thoại"}</strong><p>{playingKept ? "Về bản đang dùng để sửa lời và mốc. Mở Bản xuất để xem cấu hình hoặc tải phiên bản này." : "Bạn vẫn có thể xem và tải kết quả trong mục Bản xuất."}</p></div>}
+      </div>
+      {hasScript && !isAudio(result) ? <div className="studio-timeline" hidden={tab !== "script"}><TimingEditor path={result} lines={lines} picks={picks} onPicks={onPicks} videoRef={mediaRef} playable={playable} busy={blocked || textEditing} onStructure={onStructure} selectedIndex={selected} onSelected={setSelected} /></div> : null}
+      <footer className="studio-export-bar">
+        <div className="studio-editor-notices" role="status">        {mediaNote ? <p className="error">{mediaNote}</p> : null}
+        {openNote ? <p className="error">{openNote}</p> : null}
+        {captionNote ? <p className="error">{captionNote}</p> : null}
+        {error ? <p className="error">{error}</p> : null}
+</div>
+        <p><strong>{textEditing ? "Đang sửa lời thoại" : edits.length > 0 ? `${edits.length} câu có thay đổi chưa xuất` : "Bản đang xem đã xuất"}</strong><span>{textEditing ? "Bấm Xong ở câu đang sửa để đưa thay đổi vào bản nháp." : edits.length > 0 ? "Nháp chưa thay đổi bản đang phát. Xuất hoặc bỏ sửa trước khi đổi cấu hình." : "Sửa lời, mốc hoặc cấu hình để tạo bản xuất mới."}</span></p>
+        {edits.length > 0 && !playingKept ? <><button type="button" className="link" onClick={() => onPicks({})} disabled={blocked || textEditing}>Bỏ sửa</button><button type="button" className="check" disabled={blocked || textEditing} onClick={() => onRetake(edits)}>Xuất lại · {edits.length} câu</button></> : saveVideo}
+      </footer>
     </div>
   );
 }

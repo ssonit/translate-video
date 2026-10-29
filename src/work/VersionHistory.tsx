@@ -4,8 +4,8 @@ import { errorText, fileName, keptLabel, languageName, sameFile } from "./format
 import type { KeptVersion, VersionDetails } from "./types";
 import "./VersionHistory.css";
 
-export function VersionHistory({ result, shown, items, blocked, onPlay, onApply, onDelete }: {
-  result: string; shown: string; items: KeptVersion[]; blocked: boolean;
+export function VersionHistory({ result, shown, items, blocked, onPlay, onApply, onDelete, inline = false }: {
+  inline?: boolean; result: string; shown: string; items: KeptVersion[]; blocked: boolean;
   onPlay: (path: string) => void; onApply: (path: string) => void; onDelete: (item: KeptVersion) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -17,7 +17,7 @@ export function VersionHistory({ result, shown, items, blocked, onPlay, onApply,
   const panel = useRef<HTMLDivElement>(null);
   useEffect(() => { setOpen(false); setInfo(null); epoch.current += 1; }, [result]);
   useEffect(() => {
-    if (!open) return;
+    if (!open && !inline) return;
     let live = true;
     const ticket = ++epoch.current;
     setInfo(null); setLoading(true); setError("");
@@ -26,20 +26,21 @@ export function VersionHistory({ result, shown, items, blocked, onPlay, onApply,
     }).catch(e => { if (live && ticket === epoch.current) setError(errorText(e)); })
       .finally(() => { if (live && ticket === epoch.current) setLoading(false); });
     return () => { live = false; };
-  }, [open, result, path]);
+  }, [open, inline, result, path]);
   useEffect(() => {
-    if (!open) return;
+    if (!open || inline) return;
     const escape = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
     const outside = (e: PointerEvent) => { if (e.target instanceof Node && !panel.current?.contains(e.target)) setOpen(false); };
     document.addEventListener("keydown", escape); document.addEventListener("pointerdown", outside);
     return () => { document.removeEventListener("keydown", escape); document.removeEventListener("pointerdown", outside); };
-  }, [open]);
+  }, [open, inline]);
+  useEffect(() => { if (inline) setPath(shown); }, [shown, inline]);
   const cfg = info?.config;
-  return <div className="version-history" ref={panel}>
-    <button type="button" className="link" aria-expanded={open} onClick={() => { if (!open) setPath(shown); setOpen(!open); }}>Lịch sử &amp; cấu hình ({items.length})</button>
-    {open ? <section className="version-history-panel" aria-label="Lịch sử bản xuất">
-      <header><strong>Lịch sử bản xuất</strong><button type="button" className="link" onClick={() => setOpen(false)}>Đóng lịch sử</button></header>
-      {blocked ? <p className="history-note">Có việc đang chạy; chờ hoàn tất để đổi phiên bản hoặc nạp cấu hình.</p> : null}
+  return <div className={inline ? "version-history is-inline" : "version-history"} ref={panel}>
+    {!inline ? <button type="button" className="link" aria-expanded={open} onClick={() => { if (!open) setPath(shown); setOpen(!open); }}>Lịch sử &amp; cấu hình ({items.length})</button> : null}
+    {open || inline ? <section className="version-history-panel" aria-label="Lịch sử bản xuất">
+      <header><strong>Lịch sử bản xuất</strong>{!inline ? <button type="button" className="link" onClick={() => setOpen(false)}>Đóng lịch sử</button> : null}</header>
+      {blocked ? <p className="history-note">Hoàn tất việc đang chạy và xuất hoặc bỏ nháp đang sửa trước khi đổi phiên bản hay nạp cấu hình.</p> : null}
       <button type="button" className="link" onClick={() => setPath(shown)}>Cấu hình bản đang xem</button>
       <ol className="version-history-list">
         {items.map(item => <li key={item.path} className={sameFile(shown,item.path) ? "is-selected" : ""}>

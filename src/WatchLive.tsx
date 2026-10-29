@@ -32,6 +32,7 @@ export type WatchUpdate = {
 };
 
 type Props = {
+  active?: boolean;
   update: WatchUpdate;
   listen: boolean;
   onStop: () => void;
@@ -50,7 +51,7 @@ function statusText(update: WatchUpdate, hold: boolean): string {
   return update.detail;
 }
 
-export default function WatchLive({ update, listen, onStop, onExport }: Props) {
+export default function WatchLive({ update, listen, onStop, onExport, active = true }: Props) {
   const mediaRef = useRef<HTMLMediaElement>(null);
   const bindMedia = useCallback((node: HTMLMediaElement | null) => {
     mediaRef.current = node;
@@ -74,6 +75,14 @@ export default function WatchLive({ update, listen, onStop, onExport }: Props) {
   updateRef.current = update;
   const listenRef = useRef(listen);
   listenRef.current = listen;
+  useEffect(() => {
+    if (!active) {
+      userPaused.current = true;
+      clockPlaying.current = false;
+      mediaRef.current?.pause();
+      audioRef.current?.pause();
+    }
+  }, [active]);
   const [caption, setCaption] = useState<string | null>(null);
   const [current, setCurrent] = useState<number | null>(null);
   const [blocked, setBlocked] = useState(false);

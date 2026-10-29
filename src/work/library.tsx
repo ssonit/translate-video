@@ -1,4 +1,7 @@
-import { fold, jobFolder, languageName, openJobFolder, plainVideo, sameFile, when } from "./format";
+import { useState } from "react";
+import { jobFolder, languageName, openJobFolder, plainVideo, sameFile, when } from "./format";
+import { filterLibrary, type LibraryFilter } from "./libraryFilter";
+import { LibraryPreview } from "./LibraryPreview";
 import type { FinishedDub, View } from "./types";
 
 export function Library({
@@ -52,14 +55,15 @@ export function Library({
   onOpenDraft: (item: FinishedDub) => void;
   onRemove: (item: FinishedDub) => void;
 }) {
-  const listNeedle = fold(query.trim());
-  const visible = listNeedle
-    ? dubs.filter((item) => fold(`${item.title} ${languageName(item.language)}`).includes(listNeedle))
-    : dubs;
+  const [filter, setFilter] = useState<LibraryFilter>("all");
+  const visible = filterLibrary(dubs, query, filter);
   const liveOn = view === "progress" || (returnPreview && view === "live");
 
   return (
     <aside className="library">
+      <div className="studio-tabs library-filters" aria-label="Lọc thư viện">
+        {([["all", "Tất cả"], ["draft", "Đang dở"], ["done", "Đã xong"]] as const).map(([id, label]) => <button key={id} type="button" aria-pressed={filter === id} className={filter === id ? "is-active" : ""} onClick={() => setFilter(id)}>{label} · {dubs.filter(item => id === "all" || item.done === (id === "done")).length}</button>)}
+      </div>
       <label className="library-find">
         <span className="library-find-label">Tìm video</span>
         <svg className="library-find-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
@@ -123,6 +127,7 @@ export function Library({
           return (
             <div key={item.path} className={selected ? "lib-item is-on" : "lib-item"}>
               <button type="button" className="row" onClick={openItem}>
+                <LibraryPreview path={item.done ? item.path : item.video} audio={item.audio} />
                 <span>
                   <strong title={item.title}>{item.title}</strong>
                   <em title={live ? liveDetail : undefined}>
@@ -132,8 +137,9 @@ export function Library({
                           .join(" · ")
                       : live
                         ? `${liveDetail}${liveFraction !== null ? ` · ${Math.round(liveFraction * 100)}%` : ""}`
-                        : "Chưa xong"}
+                        : `Đang dở · ${when(item.modifiedMs)}`}
                   </em>
+                  <small className="library-source" title={item.url || item.video}>{item.url || item.video || "Nguồn trong folder việc"}</small>
                   {live && liveFraction !== null ? (
                     <span className="mini" aria-hidden="true">
                       <i style={{ width: `${liveFraction * 100}%` }} />

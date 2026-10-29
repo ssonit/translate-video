@@ -3,8 +3,8 @@ import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { Logo, Pronunciation, RenderSettings } from "./renderSettings";
 
-export function ProductionOptions({value:s,onChange,lang,voice,source,folder,audioOnly,textOnly,burn,skipTranslate,useTerms,disabled,onBusy}: {
-  value:RenderSettings;onChange:(value:RenderSettings)=>void;lang:string;voice:string;source:string;folder:string;
+export function ProductionOptions({section,onChange,value:s,lang,voice,source,folder,audioOnly,textOnly,burn,skipTranslate,useTerms,disabled,onBusy}: {
+  section?: "visual" | "audio" | "sample"; value:RenderSettings;onChange:(value:RenderSettings)=>void;lang:string;voice:string;source:string;folder:string;
   audioOnly:boolean;textOnly:boolean;burn:boolean;skipTranslate:boolean;useTerms:boolean;disabled:boolean;onBusy:(busy:boolean)=>void;
 }) {
   const [note,setNote]=useState("");
@@ -45,7 +45,10 @@ export function ProductionOptions({value:s,onChange,lang,voice,source,folder,aud
     catch(e){setNote(String(e));}finally{active.current=false;setBusy(false);onBusy(false);}
   }
   return <div className="production-options">
-    {!audioOnly&&!textOnly&&<details><summary>Âm thanh · gốc {s.audio.original}% · lời Việt {s.audio.voice}%</summary>
+    {section === "sample" && audioOnly ? <p className="key-note">Đoạn thử hình chỉ dùng cho video. Dùng Nghe trước trên màn Lồng tiếng để nghe audio.</p> : null}
+    {section === "audio" && textOnly ? <p className="key-note">Video phụ đề giữ tiếng gốc, không dùng giọng đọc mới.</p> : null}
+    {section === "audio" && audioOnly ? <p className="key-note">Audio dùng giọng đã chọn và các cách đọc tên bên dưới.</p> : null}
+    {(!section || section === "audio")&&!audioOnly&&!textOnly&&<details open={section ? true : undefined}><summary>Âm thanh · gốc {s.audio.original}% · lời Việt {s.audio.voice}%</summary>
       <fieldset className="style-controls" disabled={disabled||busy||playing}>
         {range("Tiếng gốc",s.audio.original,100,v=>update({audio:{...s.audio,original:v}}))}
         {range("Tiếng lồng",s.audio.voice,200,v=>update({audio:{...s.audio,voice:v}}))}
@@ -54,7 +57,7 @@ export function ProductionOptions({value:s,onChange,lang,voice,source,folder,aud
         <p className="key-note">Hạ cả lời gốc và nhạc đang chung một track. Khoảng nghỉ dùng lại mức tiếng gốc đã chọn.</p>
       </fieldset>
     </details>}
-    {!textOnly&&<details><summary>Cách đọc tên · {rules.length} mục cho {lang}</summary>
+    {(!section || section === "audio")&&!textOnly&&<details open={section ? true : undefined}><summary>Cách đọc tên · {rules.length} mục cho {lang}</summary>
       <p className="key-note">Chỉ đổi chữ đưa vào giọng đọc. Tên trên phụ đề và bản dịch giữ nguyên. Lưu bộ cài đặt để dùng lại cho kênh.</p>
       <fieldset className="style-controls" disabled={disabled||busy||playing}>
         {rules.map((r,i)=><div className="pronunciation-row" key={i}><span><strong>{r.from}</strong><small>Đọc: {r.to}</small></span><button type="button" className="link" disabled={!voice} onClick={()=>void hear(r.to)}>Nghe</button><button type="button" className="link" aria-label={`Bỏ cách đọc ${r.from}`} onClick={()=>saveRules(rules.filter((_,j)=>j!==i))}>Bỏ</button></div>)}
@@ -63,7 +66,7 @@ export function ProductionOptions({value:s,onChange,lang,voice,source,folder,aud
         <div className="production-actions"><button type="button" className="link" disabled={!from.trim()||!to.trim()||rules.length>=200} onClick={()=>{saveRules([...rules.filter(r=>r.from.toLocaleLowerCase()!==from.trim().toLocaleLowerCase()),{from:from.trim(),to:to.trim()}]);setFrom("");setTo("");}}>Thêm / thay cách đọc</button><button type="button" className="link" disabled={!to.trim()||!voice} onClick={()=>void hear(to)}>Nghe thử</button></div>
       </fieldset>
     </details>}
-    {!audioOnly&&<details><summary>Logo kênh {s.logo.enabled?"· Đang bật":""}</summary>
+    {(!section || section === "visual")&&!audioOnly&&<details open={section ? true : undefined}><summary>Logo kênh {s.logo.enabled?"· Đang bật":""}</summary>
       <fieldset className="style-controls" disabled={disabled||busy}>
         <button type="button" className="link" onClick={()=>void chooseLogo()}>Chọn ảnh PNG / JPEG</button>
         {s.logo.path&&<><label className="style-check"><input type="checkbox" checked={s.logo.enabled} onChange={e=>update({logo:{...s.logo,enabled:e.target.checked}})}/>Đặt logo lên video</label>
@@ -73,7 +76,7 @@ export function ProductionOptions({value:s,onChange,lang,voice,source,folder,aud
           {range("Vị trí dọc",s.logo.y,100,v=>update({logo:{...s.logo,y:v}}))}</>}
       </fieldset>
     </details>}
-    {!audioOnly&&<details><summary>Che / làm mờ chữ nguồn {s.mask.enabled?"· Đang bật":""}</summary>
+    {(!section || section === "visual")&&!audioOnly&&<details open={section ? true : undefined}><summary>Che / làm mờ chữ nguồn {s.mask.enabled?"· Đang bật":""}</summary>
       <fieldset className="style-controls" disabled={disabled||busy}>
         <label className="style-check"><input type="checkbox" checked={s.mask.enabled} onChange={e=>update({mask:{...s.mask,enabled:e.target.checked}})}/>Xử lý vùng chữ gốc</label>
         {s.mask.enabled&&<><label>Cách xử lý<select value={s.mask.mode} onChange={e=>update({mask:{...s.mask,mode:e.target.value as "blur"|"solid"}})}><option value="blur">Làm mờ</option><option value="solid">Che bằng màu nền</option></select></label>
@@ -84,7 +87,7 @@ export function ProductionOptions({value:s,onChange,lang,voice,source,folder,aud
           <p className="key-note">Bật “Khoanh vùng chữ nguồn” trong khung mẫu để kéo vùng trên hình. Vùng cố định suốt video; đây là che/làm mờ, không phục hồi cảnh phía sau.</p></>}
       </fieldset>
     </details>}
-    {!audioOnly&&<details><summary>Xem thử bản xuất · 8 giây</summary>
+    {(!section || section === "sample")&&!audioOnly&&<details open={section ? true : undefined}><summary>Xem thử bản xuất · 8 giây</summary>
       <label>Từ giây<input type="number" min={0} step={1} value={start} disabled={busy} onChange={e=>{setSample("");setStart(Math.max(0,+e.target.value));}}/></label>
       <p className="key-note">Dùng khung, chữ và mức âm khi xuất. Cần có bản dịch và đủ WAV từng câu; chưa có thì chạy video trước.</p>
       <div className="production-actions"><button type="button" className="link" disabled={disabled||busy||!source||!folder} onClick={()=>void preview()}>{busy?"Đang dựng đoạn thử…":"Dựng & xem thử"}</button>{busy&&<button type="button" className="link" onClick={()=>void invoke("cancel_dub")}>Dừng đoạn thử</button>}</div>
