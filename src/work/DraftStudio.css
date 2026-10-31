@@ -1,9 +1,16 @@
 .draft-studio { display: flex; flex-direction: column; height: 100%; min-height: 0; max-width: 1640px; margin: 0 auto; width: 100%; }
+.draft-opening { margin: clamp(24px,6vh,72px) auto; padding: 32px; width: min(560px,calc(100% - 36px)); border: 1px solid var(--line); border-radius: 16px; background: var(--surface); }
+.draft-opening h2 { margin: 10px 0 16px; font-size: 1.4rem; }
+.draft-opening p:not(.kicker),.draft-opening small { color: var(--muted); line-height: 1.7; overflow-wrap: anywhere; }
+.draft-opening small { display: block; margin-top: 10px; }
+.draft-opening>div { display: flex; align-items: center; gap: 20px; margin-top: 24px; }
 .draft-body { flex: 1; min-height: 0; padding: 28px clamp(18px,3vw,42px); }
 .draft-studio :where(button:not(.link):not(.check)) { font: inherit; font-size: .8rem; color: var(--text); background: var(--raised); border: 1px solid var(--line-strong); border-radius: 9px; padding: 9px 13px; cursor: pointer; }
 .draft-studio button:hover:not(:disabled):not(.check) { border-color: var(--control-border); }
 .draft-studio button:disabled { cursor: default; }
 .draft-studio .draft-footer { flex-shrink: 0; margin: 0; padding: 16px clamp(18px,3vw,42px); }
+.draft-speech-review { flex-shrink: 0; display: flex; align-items: center; flex-wrap: wrap; gap: 8px 18px; padding: 10px clamp(18px,3vw,42px); border-top: 1px solid var(--line); color: var(--accent); font-size: .8rem; line-height: 1.5; }
+.draft-speech-review span { flex: 1; min-width: 220px; }
 .draft-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; margin-bottom: 24px; }
 .draft-heading h2 { font-size: clamp(1.3rem,2vw,2rem); line-height: 1.35; margin: 6px 0 10px; overflow-wrap: anywhere; }
 .draft-heading p:not(.kicker) { color: var(--muted); font-size: .85rem; max-width: 70ch; line-height: 1.7; }

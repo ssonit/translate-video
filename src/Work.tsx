@@ -55,6 +55,21 @@ export default function Work({
   const [draftRoot, setDraftRoot] = useState(() => localStorage.getItem("active-draft-root") || "");
   const [draftInitial, setDraftInitial] = useState<DraftView | null>(null);
   const [draftBusy, setDraftBusy] = useState("");
+  const [canceling, setCanceling] = useState(false);
+  const draftCanceled = useRef(false);
+  useEffect(() => {
+    if (canceling && !s.running && !s.downloading && !s.joining && !s.captioning) {
+      setCanceling(false);
+      s.setRunNotice("Yêu cầu dừng đã được xử lý.");
+    }
+  }, [canceling, s.running, s.downloading, s.joining, s.captioning]);
+  async function cancelCurrent() {
+    if (canceling) return;
+    setCanceling(true); draftCanceled.current = true;
+    s.setRunNotice("Đang dừng… Chờ tác vụ hiện tại kết thúc trước khi chạy việc mới.");
+    try { await job.stop(); }
+    catch (error) { s.setError(String(error)); setCanceling(false); }
+  }
   const [draftSetup, setDraftSetup] = useState<SetupSummary | null>(null);
   const draftGuard = useRef<(() => Promise<boolean>) | null>(null);
   const registerDraftGuard = useCallback((guard: (() => Promise<boolean>) | null) => { draftGuard.current = guard; }, []);
@@ -66,20 +81,24 @@ export default function Work({
     if (draftBusy || s.running || s.captioning) return;
     if (draftGuard.current && !await draftGuard.current()) return;
     draftActivity("Đang mở nháp…");
+    draftCanceled.current = false;
     try {
       const initial=await invoke<DraftView>("open_draft",{source:root,outputDir:s.folder,isLink:false,options:draftOptions()});
-      setDraftRoot(root); setDraftInitial(initial); localStorage.setItem("active-draft-root", root); s.setView("new");
+      if (draftCanceled.current) return;
+      setDraftRoot(initial.root); setDraftInitial(initial); localStorage.setItem("active-draft-root", initial.root); s.setView("new");
     } catch(e) {s.setError(String(e));} finally {draftActivity("");}
   }
   async function openSource() {
     if (s.running || s.captioning) return;
     draftActivity("Đang mở nguồn…"); s.setError("");
+    draftCanceled.current = false;
     try {
       const next = await invoke<DraftView>("open_draft", {
         source: s.mode === "file" ? s.composeVideo : s.composeLink,
         outputDir: s.folder, isLink: s.mode === "link",
         options: draftOptions(),
       });
+      if (draftCanceled.current) return;
       setDraftRoot(next.root); setDraftInitial(next); localStorage.setItem("active-draft-root", next.root);
     } catch (e) { s.setError(String(e)); }
     finally { draftActivity(""); }
@@ -146,11 +165,13 @@ export default function Work({
   const activeStep = s.steps.find((step) => step.state === "running");
   const liveFraction = s.downloading ? s.download.progress : s.running && overall.fraction > 0 ? overall.fraction : null;
   const liveTitle = s.downloading ? "Đang tải" : s.video ? fileName(s.video) : "Video đang xử lý";
+  const finalizing = s.running && !s.downloading && s.steps.length > 0 && s.steps.every(step => step.state === "done" || step.state === "skipped");
   const liveDetail = s.downloading
     ? s.download.detail || "Đang tải"
     : s.error && !s.running
       ? s.error
       : s.nameReview ? "Đang chờ bạn kiểm tra tên"
+      : finalizing ? "Đang lưu phiên bản và hoàn tất kết quả…"
       : activeStep
         ? activeStep.label
         : s.running
@@ -188,6 +209,14 @@ export default function Work({
           </div>
           <div className="mast-actions"><SetupChip summary={draftRoot && draftSetup && (s.view === "new" || draftBusy) ? draftSetup : setup} onClick={onSetup} /></div>
         </div>
+        {s.runNotice || s.running || s.downloading ? <div className="studio-run-status" role="status" aria-live="polite">
+          {s.running || s.downloading ? <span className="studio-run-spinner" aria-hidden="true" /> : <span aria-hidden="true">{s.error ? "!" : "✓"}</span>}
+          <div><strong>{draftBusy || s.runNotice || (liveDetail === "Đang chạy" ? "Đang chuẩn bị xử lý…" : liveDetail)}</strong><small>{s.running || s.downloading ? finalizing ? "Đã ghép xong. App sẽ tự mở kết quả sau khi lưu hoàn tất." : `${liveDetail}${activeStep?.detail ? ` · ${activeStep.detail}` : ""}` : "Lồng tiếng → Hàng đợi → Xem kết quả"}</small></div>
+          {s.view !== "progress" && (s.running || s.downloading) && !draftBusy ? <button type="button" className="link" onClick={() => s.setView("progress")}>Xem tiến độ</button> : null}
+          {s.running || s.downloading ? <button type="button" className="link" disabled={canceling} onClick={() => void cancelCurrent()}>{canceling ? "Đang dừng…" : "Hủy xử lý"}</button> : null}
+          {!s.running && !s.downloading && !s.error && s.result && s.view !== "watch" ? <button type="button" className="check" onClick={() => s.setView("watch")}>Xem kết quả</button> : null}
+          {s.runNotice && !s.running && !s.downloading ? <button type="button" className="link" aria-label="Đóng thông báo xử lý" onClick={() => s.setRunNotice("")}>Đóng</button> : null}
+        </div> : null}
       </header>
       <div className="stage-body">
         <div className="studio-library-page" hidden={s.view !== "library"}>

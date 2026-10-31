@@ -13,7 +13,7 @@ use crate::job::{
     file_ready, is_extra_video, is_listen_audio, is_partial_audio, read_json, write_json, Cue, Job,
     TranslatedLine,
 };
-use crate::ollama::{divide_time, split_line};
+use crate::ollama::divide_time;
 
 use super::retake::restore_retake;
 use super::{report, report_progress, stopped};
@@ -279,7 +279,7 @@ pub(super) fn split(
             index as f64,
             cues.len() as f64,
         );
-        let parts = split_line(&cue.text);
+        let parts = super::speech_plan::parts(cue);
         lines.extend(divide_time(cue.start, cue.end, &parts));
     }
     if lines.is_empty() {

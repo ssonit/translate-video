@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { playVoicePreview } from "../tts/voicePreview";
 import { ask, save } from "@tauri-apps/plugin-dialog";
 import {
   againPlan,
@@ -184,17 +185,22 @@ export function playbackActions(s: Session) {
   }
 
   async function previewVoice() {
+    if (s.previewAbort.current) {
+      s.previewAbort.current.abort();
+      s.setVoiceNote("Đang dừng thử giọng…");
+      return;
+    }
+    const controller = new AbortController();
+    s.previewAbort.current = controller;
     s.setVoiceNote("");
     s.setPreviewing(true);
     try {
-      const wav = await invoke<ArrayBuffer>("preview_voice", { lang: s.target, name: s.voice });
-      const url = URL.createObjectURL(new Blob([wav], { type: "audio/wav" }));
-      const audio = new Audio(url);
-      audio.onended = () => URL.revokeObjectURL(url);
-      await audio.play();
+      await playVoicePreview(s.target, s.voice, controller.signal);
+      if (controller.signal.aborted) s.setVoiceNote("Đã dừng thử giọng.");
     } catch (caught) {
       s.setVoiceNote(errorText(caught));
     } finally {
+      s.previewAbort.current = null;
       s.setPreviewing(false);
     }
   }
@@ -329,6 +335,7 @@ export function playbackActions(s: Session) {
     s.setRunStartedAt(Date.now());
     s.setRunning(true);
     s.setView("progress");
+    s.setRunNotice("Đã bắt đầu làm lại. Theo dõi xử lý tại Hàng đợi.");
     s.ownsRun.current = true;
     try {
       const path = await invoke<string>("start_again", {
@@ -343,11 +350,13 @@ export function playbackActions(s: Session) {
       });
       s.setResult(path);
       s.setResultTextOnly(s.againTextOnly && !isAudio(path));
+      s.setRunNotice("Đã làm lại xong. Đang mở kết quả mới để bạn xem.");
       s.setResultEpoch((epoch) => epoch + 1);
       s.setListTick((tick) => tick + 1);
       s.setView("watch");
     } catch (caught) {
       s.setAgainNote(errorText(caught));
+      s.setRunNotice(`Chưa hoàn tất bản làm lại: ${errorText(caught)}`);
       s.setAgainOpen(true);
       s.setView("watch");
       invoke("allow_result", { path: s.result })
@@ -404,18 +413,21 @@ export function playbackActions(s: Session) {
     s.setError("");
     s.setCaptionNote("");
     s.setSteps(freshSteps(isAudio(source), showAsTextOnly(source, watched()?.path ?? "", s.resultTextOnly)));
+    s.setRunNotice("Đã bắt đầu xuất bản sửa. Theo dõi xử lý tại Hàng đợi.");
     s.setRunStartedAt(Date.now());
     s.setRunning(true);
     s.setView("progress");
     s.ownsRun.current = true;
     try {
       const path = await invoke<string>("revise_lines", { path: source, edits, structure: structure ?? null });
+      s.setRunNotice("Đã xuất xong bản sửa. Đang mở kết quả mới để bạn xem.");
       s.setResult(path);
       s.setResultEpoch((epoch) => epoch + 1);
       s.setListTick((tick) => tick + 1);
       s.setView("watch");
     } catch (caught) {
       s.setError(errorText(caught));
+      s.setRunNotice(`Chưa xuất được bản sửa: ${errorText(caught)}`);
       s.setView("watch");
       invoke("allow_result", { path: source })
         .then(() => s.setPlayable(true))

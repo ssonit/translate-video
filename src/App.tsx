@@ -8,6 +8,7 @@ import LocalModels from "./LocalModels";
 import { firstGap, markFor, summarize, type ToolStatus } from "./setupStatus";
 import Work from "./Work";
 import { useTtsBridge } from "./tts/bridge";
+import { playVoicePreview } from "./tts/voicePreview";
 import "./App.css";
 import "./preferences.css";
 import "./work/Studio.css";
@@ -49,6 +50,8 @@ export default function App() {
   const [voices, setVoices] = useState<string[]>([]);
   const [voice, setVoice] = useState("");
   const [previewing, setPreviewing] = useState(false);
+  const previewAbort = useRef<AbortController | null>(null);
+  useEffect(() => () => previewAbort.current?.abort(), []);
   const [voiceNote, setVoiceNote] = useState("");
   const [installing, setInstalling] = useState(false);
   const [install, setInstall] = useState<InstallEvent | null>(null);
@@ -187,17 +190,18 @@ export default function App() {
   }
 
   async function previewVoice() {
+    if (previewAbort.current) { previewAbort.current.abort(); setVoiceNote("Đang dừng thử giọng…"); return; }
+    const controller = new AbortController();
+    previewAbort.current = controller;
     setVoiceNote("");
     setPreviewing(true);
     try {
-      const wav = await invoke<ArrayBuffer>("preview_voice", { lang: "vi", name: voice });
-      const url = URL.createObjectURL(new Blob([wav], { type: "audio/wav" }));
-      const audio = new Audio(url);
-      audio.onended = () => URL.revokeObjectURL(url);
-      await audio.play();
+      await playVoicePreview("vi", voice, controller.signal);
+      if (controller.signal.aborted) setVoiceNote("Đã dừng thử giọng.");
     } catch (caught) {
       setVoiceNote(typeof caught === "string" ? caught : "Chưa đọc thử được giọng.");
     } finally {
+      previewAbort.current = null;
       setPreviewing(false);
     }
   }
@@ -441,8 +445,8 @@ export default function App() {
                   ))}
                 </select>
               </div>
-              <button type="button" onClick={() => void previewVoice()} disabled={previewing || voice === ""}>
-                {previewing ? "Đang đọc" : "Thử giọng"}
+              <button type="button" onClick={() => void previewVoice()} disabled={!previewing && (voice === "" || busy !== "")}>
+                {previewing ? "Dừng thử giọng" : "Thử giọng"}
               </button>
             </div>
           ) : null}

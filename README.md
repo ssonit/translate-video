@@ -56,6 +56,8 @@ Whisper: mục Whisper ở màn chuẩn bị có nút **Tải Whisper**. Một c
 
 ## Giảm thời gian xử lý
 
+Việc mới gom lời có khoảng trắng theo cụm trước khi dịch để giảm câu vụn; nháp hiện số câu/giây có nguy cơ cắt giọng và nút đến câu cần kiểm tra ngay trước khi xuất. Cảnh báo dùng WAV đã xác minh, chỉ chữ/audio không báo co giọng video. Không tự chia lại việc cũ. Trên mẫu 60 giây, đối chứng giữ nguyên từ dịch giảm phần giọng không giữ từ 11,31 xuống 3,85 giây; bản dịch mới còn hai câu cần sửa. [Phạm vi thay đổi, số đo và giới hạn](docs/giam-cat-giong-2026-10-31.md).
+
 Xuất video cần mã hóa hình ưu tiên NVENC trên máy có NVIDIA, tự dùng lại CPU nếu GPU lỗi; ghép tiếng không đổi hình vẫn copy video. Trên video Douyin Full HD 6 phút, phép đo cùng hình/phụ đề giảm phần ghi chữ từ 128,84 xuống 29,70 giây, file lớn hơn khoảng 14%. Bản thử đã sửa riêng bốn câu bị cắt bằng rút lời/chỉnh mốc, báo cáo căn tiếng còn 0 câu bị cắt; [số đo, cách sửa và giới hạn](docs/gpu-va-bon-cau-2026-10-29.md).
 
 Whisper GPU dùng lọc vùng có giọng nói và tránh kéo lỗi nhận dạng từ đoạn trước. Việc mới ghép các mẩu câu sát nhau trước khi dịch; bản dịch lồng video nhận thời lượng từng câu để viết gọn ngay từ đầu. Audio liền mạch giữ đủ lời, không rút gọn theo mốc hình. Câu ngắn bị đứng trong bộ đọc của cửa sổ được thử lại một lần với worker mới. Việc cũ giữ cache; dùng Chép lời lại nếu muốn chia câu theo cách mới. Trên video Douyin đã thử, câu bị cắt giảm từ 41 xuống 4; [kết quả và giới hạn](docs/toi-uu-loi-va-giong-2026-10-29.md).

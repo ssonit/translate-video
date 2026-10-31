@@ -1,4 +1,11 @@
 /* Workspace navigation and editor layout. Job lifetime stays in Work, outside pages. */
+.studio-run-status { display: flex; align-items: center; gap: 12px; margin-top: 12px; padding: 12px 16px; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--accent-soft); }
+.studio-run-status > div { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.studio-run-status strong { display: block; font-size: .86rem; }
+.studio-run-status small { display: block; margin-top: 4px; color: var(--muted); font-size: .78rem; }
+.studio-run-spinner { flex: 0 0 18px; width: 18px; height: 18px; box-sizing: border-box; border: 2px solid var(--line-strong); border-top-color: var(--accent); border-radius: 50%; animation: studio-run-spin 1s linear infinite; }
+@keyframes studio-run-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .studio-run-spinner { animation: none; } }
 :root {
   --control-border: #71717a;
   --hover: #27272e;

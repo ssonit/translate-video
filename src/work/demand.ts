@@ -7,7 +7,15 @@ export type DraftOptions = {
 export type DraftCue = { id: string; slot: number; sources: number[]; authored: boolean; keep_speech: boolean;
   line: { start: number; end: number; source: string; translation: string } };
 export type DraftView = { root: string; source: string; revision: string; duration: number; options: DraftOptions;
-  cues: DraftCue[]; canUndo: boolean; namesReviewed: boolean; ready: string[]; lastExport: string | null; warning?: string | null };
+  cues: DraftCue[]; canUndo: boolean; namesReviewed: boolean; ready: string[]; lastExport: string | null; warning?: string | null;
+  speechWarnings?: { id: string; lostSeconds: number; tentative: boolean }[] };
+
+export function speechReview(view: Pick<DraftView, "options" | "speechWarnings">) {
+  const warnings = view.options.audioOnly || view.options.textOnly ? []
+    : (view.speechWarnings ?? []).filter(w => Number.isFinite(w.lostSeconds) && w.lostSeconds > 0.02);
+  return { warnings, lostSeconds: warnings.reduce((sum, w) => sum + w.lostSeconds, 0),
+    tentative: warnings.some(w => w.tentative) };
+}
 export type DraftClip = { id: string; path: string; version: string; start: number; speed: number; played: number; tentative: boolean };
 export type DraftRegion = { view: DraftView; clips: DraftClip[] };
 export type RegionInput = { root: string; start: number; end: number; listen: boolean; cue?: string | null };

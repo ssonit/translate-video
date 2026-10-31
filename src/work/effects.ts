@@ -29,13 +29,18 @@ export function useWorkEffects(
         if (!live || s.ownsRun.current) return;
         if (!status.running && status.steps.length === 0 && !status.result && !status.error) return;
         fx.applyStatus(status);
-        if (status.running) s.setView("progress");
+        if (status.running || status.error) s.setView("progress");
+        else if (status.result) {
+          s.setRunNotice("Xử lý đã hoàn tất. Đã mở lại kết quả để bạn xem.");
+          s.setView("watch");
+        }
       })
       .catch(() => {});
     const unlisten = listen<DubStatus>("dub-finished", (event) => {
       if (s.ownsRun.current) return;
       fx.applyStatus(event.payload);
       if (event.payload.result) {
+        s.setRunNotice("Xử lý đã hoàn tất. Đang mở kết quả để bạn xem.");
         s.activeJob.current = null;
         writeSavedQueue({ waiting: s.queueRef.current, current: null });
         s.setView("watch");
@@ -48,6 +53,31 @@ export function useWorkEffects(
     // The listener belongs to this window for its whole life. Setters and refs stay put.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // A reloaded window has no pending invoke to bring it back to the result.
+  // Reconcile with Rust as well as listening for the one-shot finish event.
+  useEffect(() => {
+    if (!s.running) return;
+    let live = true;
+    let checking = false;
+    const timer = window.setInterval(async () => {
+      if (checking || s.ownsRun.current) return;
+      checking = true;
+      try {
+        const status = await invoke<DubStatus>("dub_status");
+        if (!live || s.ownsRun.current || status.running) return;
+        fx.applyStatus(status);
+        if (status.result) {
+          s.setRunNotice("Xử lý đã hoàn tất. Đang mở kết quả để bạn xem.");
+          s.setResultEpoch(epoch => epoch + 1);
+          s.setView("watch");
+        } else if (status.error) s.setView("progress");
+      } catch { /* Keep the current progress if the status request fails. */ }
+      finally { checking = false; }
+    }, 2000);
+    return () => { live = false; window.clearInterval(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [s.running]);
 
   useEffect(() => {
     fx.onBusy(fx.busyText);

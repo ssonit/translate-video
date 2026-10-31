@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { Logo, Pronunciation, RenderSettings } from "./renderSettings";
+import { playVoicePreview } from "../tts/voicePreview";
 
 export function ProductionOptions({section,onChange,value:s,lang,voice,source,folder,audioOnly,textOnly,burn,skipTranslate,useTerms,disabled,onBusy}: {
   section?: "visual" | "audio" | "sample"; value:RenderSettings;onChange:(value:RenderSettings)=>void;lang:string;voice:string;source:string;folder:string;
@@ -14,13 +15,13 @@ export function ProductionOptions({section,onChange,value:s,lang,voice,source,fo
   const [from,setFrom]=useState("");
   const [to,setTo]=useState("");
   const [playing,setPlaying]=useState(false);
-  const audio=useRef<HTMLAudioElement|null>(null);
-  const url=useRef("");
+  const voiceAbort=useRef<AbortController|null>(null);
+  const [stopping,setStopping]=useState(false);
   const active=useRef(false);
   const rules=s.pronunciations[lang]??[];
   const update=(patch:Partial<RenderSettings>)=>onChange({...s,...patch});
   useEffect(()=>{setSample("");},[s,source,lang,textOnly,burn]);
-  useEffect(()=>()=>{audio.current?.pause();if(url.current)URL.revokeObjectURL(url.current);if(active.current)void invoke("cancel_dub");},[]);
+  useEffect(()=>()=>{voiceAbort.current?.abort();if(active.current)void invoke("cancel_dub");},[]);
   const range=(label:string,value:number,max:number,onValue:(v:number)=>void)=><label>{label}<span className="style-range"><input type="range" min={0} max={max} value={value} onChange={e=>onValue(+e.target.value)}/><output>{value}%</output></span></label>;
   async function chooseLogo(){
     setNote("");
@@ -30,21 +31,24 @@ export function ProductionOptions({section,onChange,value:s,lang,voice,source,fo
   }
   function saveRules(next:Pronunciation[]){update({pronunciations:{...s.pronunciations,[lang]:next}});}
   async function hear(text:string){
+    if(voiceAbort.current)return;
+    const controller=new AbortController();voiceAbort.current=controller;
     setPlaying(true);setNote("");onBusy(true);
-    try {audio.current?.pause();if(url.current)URL.revokeObjectURL(url.current);
-      const bytes=await invoke<ArrayBuffer>("preview_voice",{lang,name:voice,text});
-      url.current=URL.createObjectURL(new Blob([bytes],{type:"audio/wav"}));
-      const player=new Audio(url.current);audio.current=player;
-      player.onended=()=>setPlaying(false);player.onerror=()=>{setPlaying(false);setNote("Không phát được câu thử.");};
-      await player.play();
-    } catch(e){setNote(String(e));setPlaying(false);}finally{onBusy(false);}
+    try {await playVoicePreview(lang,voice,controller.signal,text);if(controller.signal.aborted)setNote("Đã dừng thử giọng.");}
+    catch(e){setNote(String(e));}finally{voiceAbort.current=null;setPlaying(false);setStopping(false);onBusy(false);}
+  }
+  async function cancelWork(){
+    setStopping(true);setNote("Đang dừng…");
+    if(voiceAbort.current){voiceAbort.current.abort();return;}
+    try{await invoke("cancel_dub");}catch(e){setNote(String(e));setStopping(false);}
   }
   async function preview(){
     setSample("");setNote("");setBusy(true);onBusy(true);active.current=true;
     try {const path=await invoke<string>("render_sample",{video:source,outputDir:folder,target:lang,start,seconds:8,textOnly,burn,voice,skipTranslate,useTerms,render:s});setSample(convertFileSrc(path));}
-    catch(e){setNote(String(e));}finally{active.current=false;setBusy(false);onBusy(false);}
+    catch(e){setNote(String(e));}finally{active.current=false;setBusy(false);setStopping(false);onBusy(false);}
   }
   return <div className="production-options">
+    {playing&&<button type="button" className="link" disabled={stopping} onClick={()=>void cancelWork()}>{stopping?"Đang dừng…":"Dừng thử giọng"}</button>}
     {section === "sample" && audioOnly ? <p className="key-note">Đoạn thử hình chỉ dùng cho video. Dùng Nghe trước trên màn Lồng tiếng để nghe audio.</p> : null}
     {section === "audio" && textOnly ? <p className="key-note">Video phụ đề giữ tiếng gốc, không dùng giọng đọc mới.</p> : null}
     {section === "audio" && audioOnly ? <p className="key-note">Audio dùng giọng đã chọn và các cách đọc tên bên dưới.</p> : null}
@@ -90,7 +94,7 @@ export function ProductionOptions({section,onChange,value:s,lang,voice,source,fo
     {(!section || section === "sample")&&!audioOnly&&<details open={section ? true : undefined}><summary>Xem thử bản xuất · 8 giây</summary>
       <label>Từ giây<input type="number" min={0} step={1} value={start} disabled={busy} onChange={e=>{setSample("");setStart(Math.max(0,+e.target.value));}}/></label>
       <p className="key-note">Dùng khung, chữ và mức âm khi xuất. Cần có bản dịch và đủ WAV từng câu; chưa có thì chạy video trước.</p>
-      <div className="production-actions"><button type="button" className="link" disabled={disabled||busy||!source||!folder} onClick={()=>void preview()}>{busy?"Đang dựng đoạn thử…":"Dựng & xem thử"}</button>{busy&&<button type="button" className="link" onClick={()=>void invoke("cancel_dub")}>Dừng đoạn thử</button>}</div>
+      <div className="production-actions"><button type="button" className="link" disabled={disabled||busy||!source||!folder} onClick={()=>void preview()}>{busy?"Đang dựng đoạn thử…":"Dựng & xem thử"}</button>{busy&&<button type="button" className="link" disabled={stopping} onClick={()=>void cancelWork()}>{stopping?"Đang dừng…":"Dừng đoạn thử"}</button>}</div>
       {sample&&<video className="export-sample" src={sample} controls preload="metadata"/>}
     </details>}
     {note&&<p className="error" role="alert">{note}</p>}

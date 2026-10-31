@@ -21,6 +21,7 @@ function session(queue, policy) {
     runPauseRef: { current: { pausedMs: 0, sinceMs: null } }, gate: { current: false },
     holdQueue: { current: false }, ownsRun: { current: false }, retryRef: { current: null },
     previewSlot: { current: { open: false, listen: false, epoch: 0 } },
+    watchUpdateRef: { current: null }, viewRef: { current: "new" },
     running: false, folder: "D:\\test", target: "vi", voice: "voice", model: "qwen3.5:9b-q4_K_M", provider: "local", useTerms: false,
     render: DEFAULT_RENDER, pending: "", mode: "file", video: "", link: "",
   };
@@ -34,6 +35,86 @@ function session(queue, policy) {
 }
 
 try {
+  await test("cancel preview preflight prevents Whisper from starting", async () => {
+    let finish; const calls = [];
+    ipc = async command => {
+      calls.push(command);
+      if (command === "finished_result") return new Promise(resolve => { finish = resolve; });
+      return null;
+    };
+    const s = session([], "stop"); s.composeVideo = "video.mp4";
+    const actions = jobActions(s); const pending = actions.runLive();
+    for (let i = 0; !finish && i < 30; i++) await new Promise(resolve => setTimeout(resolve, 5));
+    assert.ok(finish);
+    assert.equal(s.running, true);
+    await actions.stop(); finish(""); await pending;
+    assert.equal(calls.includes("start_watch"), false);
+    assert.equal(s.running, false); assert.equal(s.gate.current, false);
+  });
+  await test("cancel saved-video download prevents dubbing from starting", async () => {
+    let finish; const calls = [];
+    ipc = async command => {
+      calls.push(command);
+      if (command === "download_saved_video") return new Promise(resolve => { finish = resolve; });
+      return null;
+    };
+    const s = session([], "stop"); s.result = "audio.vi.m4a";
+    const actions = jobActions(s); const pending = actions.fetchVideo();
+    for (let i = 0; !finish && i < 30; i++) await new Promise(resolve => setTimeout(resolve, 5));
+    assert.ok(finish);
+    await actions.stop(); finish("D:\\test\\video.mp4"); await pending;
+    assert.equal(calls.includes("start_dub"), false);
+    assert.equal(s.running, false); assert.equal(s.gate.current, false);
+  });
+
+  for (const phase of ["save_voice", "download_video", "finished_result"]) {
+    await test(`cancel during ${phase} prevents the next pipeline from starting`, async () => {
+      let finish; const calls = [];
+      ipc = async command => {
+        calls.push(command);
+        if (command === phase) return new Promise(resolve => { finish = resolve; });
+        if (command === "finished_result") return "";
+        return null;
+      };
+      const queued = item("video.mp4");
+      if (phase === "download_video") { queued.mode = "link"; queued.source = "https://youtu.be/test"; }
+      const s = session([queued], "stop");
+      const actions = jobActions(s); const pending = actions.runQueue();
+      for (let i = 0; !finish && i < 30; i++) await new Promise(resolve => setTimeout(resolve, 5));
+      assert.ok(finish);
+      await actions.stop();
+      assert.equal(s.running, true);
+      finish(phase === "download_video" ? "D:\\test\\source.mp4" : "");
+      await pending;
+      assert.equal(calls.includes("start_dub"), false);
+      assert.equal(s.running, false);
+      assert.equal(s.gate.current, false);
+      assert.equal(s.error, "Đã dừng.");
+    });
+  }
+
+  await test("a running export opens progress immediately and switches to its result after completion", async () => {
+    let finish;
+    ipc = async command => {
+      if (command === "finished_result") return "";
+      if (command === "start_dub") return new Promise(resolve => { finish = resolve; });
+      return null;
+    };
+    const s = session([item("video.mp4")], "stop");
+    const pending = jobActions(s).runQueue();
+    for (let i = 0; !finish && i < 30; i++) await new Promise(resolve => setTimeout(resolve, 5));
+    assert.ok(finish);
+    assert.equal(s.running, true);
+    assert.equal(s.view, "progress");
+    assert.match(s.runNotice, /Đã bắt đầu.*video.mp4/);
+    finish("D:\\test\\video.vi.mp4");
+    await pending;
+    assert.equal(s.running, false);
+    assert.equal(s.view, "watch");
+    assert.equal(s.result, "D:\\test\\video.vi.mp4");
+    assert.match(s.runNotice, /Hàng đợi đã hoàn tất/);
+  });
+
   await test("continue-on-error records the failure and processes the following job", async () => {
     const calls = [];
     ipc = async (command, args) => {

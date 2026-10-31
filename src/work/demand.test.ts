@@ -1,9 +1,21 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { playbackInterrupted, regionQueue, splitText } from "./demand.ts";
+import { playbackInterrupted, regionQueue, speechReview, splitText } from "./demand.ts";
 
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done; }); return { promise, resolve }; }
 const flush = () => new Promise<void>(done => setImmediate(done));
+
+test("speech review handles legacy data and skips modes without timed speech", () => {
+  const options = { audioOnly: false, textOnly: false } as Parameters<typeof speechReview>[0]["options"];
+  assert.equal(speechReview({ options }).warnings.length, 0);
+  const speechWarnings = [{ id: "a", lostSeconds: 0.5, tentative: false }, { id: "b", lostSeconds: 1.2, tentative: true }, { id: "bad", lostSeconds: NaN, tentative: false }];
+  const review = speechReview({ options, speechWarnings });
+  assert.equal(review.warnings.length, 2);
+  assert.equal(review.lostSeconds, 1.7);
+  assert.equal(review.tentative, true);
+  assert.equal(speechReview({ options: { ...options, audioOnly: true }, speechWarnings }).warnings.length, 0);
+  assert.equal(speechReview({ options: { ...options, textOnly: true }, speechWarnings }).warnings.length, 0);
+});
 
 test("seeking keeps one running region and replaces all queued regions with the newest", async () => {
   const first = deferred<number>(); const runs: string[] = [], values: number[] = [];

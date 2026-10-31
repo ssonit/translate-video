@@ -324,6 +324,7 @@ export function jobActions(s: Session) {
     s.setMode("file");
     s.setResult(path);
     s.setResultTextOnly(textOnly);
+    s.setRunNotice(`Đã có kết quả của ${fileName(source)}. Đang mở để bạn xem.`);
     s.setPlayingKept("");
     s.setAgainOpen(false);
     s.setError("");
@@ -334,6 +335,10 @@ export function jobActions(s: Session) {
   }
 
   // Chạy một video. Trả về true khi xong và hàng đợi còn được chạy tiếp.
+  function requireActiveRequest() {
+    if (s.holdQueue.current || s.skipActive.current) throw "Đã dừng.";
+  }
+
   async function execute(spec: JobSpec, label = "", id = "") {
     // Legacy queues had no service snapshot. Freeze the current choice before
     // starting, and persist it so retries/reloads cannot silently switch later.
@@ -347,6 +352,7 @@ export function jobActions(s: Session) {
     s.setError("");
     s.setQueueNote("");
     s.setResult("");
+    s.setRunNotice(`Đã bắt đầu ${label || fileName(spec.source)}. Theo dõi xử lý tại Hàng đợi.`);
     s.setNameEdit(false);
     s.setAgainOpen(false);
     s.setPlayingKept("");
@@ -358,6 +364,7 @@ export function jobActions(s: Session) {
     if (spec.mode === "link") s.setLink(spec.source);
     try {
       if (spec.voice) await invoke("save_voice", { lang: spec.target, name: spec.voice });
+      requireActiveRequest();
       let source = spec.source;
       if (spec.mode === "link") {
         s.setDownload({ detail: spec.audioOnly ? "Đang lấy phụ đề." : "Đang chuẩn bị tải.", progress: null });
@@ -365,12 +372,14 @@ export function jobActions(s: Session) {
         source = spec.audioOnly
           ? await invoke<string>("prepare_listen", { url: spec.source, outputDir: spec.folder })
           : await invoke<string>("download_video", { url: spec.source, outputDir: spec.folder });
+        requireActiveRequest();
         s.setDownloading(false);
         s.retryRef.current = { ...spec, mode: "file", source };
       }
       if (!source) return false;
       s.setVideo(source);
       const existing = await existingResult(source, spec);
+      requireActiveRequest();
       if (existing) {
         recordRun(spec,"done",attemptStarted,existing);
         proceed = true;
@@ -401,10 +410,14 @@ export function jobActions(s: Session) {
       s.setResult(path);
       s.setResultTextOnly(spec.textOnly);
       proceed = !s.holdQueue.current;
+      s.setRunNotice(proceed && s.queueRef.current.length > 0
+        ? `Đã xong ${label || fileName(source)}. Đang chuyển sang video tiếp theo.`
+        : `Đã xử lý xong ${label || fileName(source)}${id && s.queueRef.current.length === 0 ? ". Hàng đợi đã hoàn tất" : ""}. Đang mở kết quả để bạn xem.`);
       s.setView(proceed && s.queueRef.current.length > 0 ? "progress" : "watch");
       return proceed;
     } catch (caught) {
       const message=errorText(caught);
+      s.setRunNotice(message === "Đã dừng." ? "Đã dừng xử lý." : `Xử lý bị gián đoạn: ${message}`);
       if(s.skipActive.current){
         s.skipActive.current=false;recordRun(spec,"skipped",attemptStarted);proceed=!s.holdQueue.current;
       }else{
@@ -535,7 +548,8 @@ export function jobActions(s: Session) {
   }
 
   async function fetchVideo() {
-    if (!s.result) return;
+    if (!s.result || s.running || s.gate.current) return;
+    s.gate.current = true; s.holdQueue.current = false; s.skipActive.current = false;
     closePreview();
     s.setError("");
     s.setOpenNote("");
@@ -547,6 +561,7 @@ export function jobActions(s: Session) {
     s.setDownloading(true);
     try {
       const job = await invoke<string>("download_saved_video", { result: s.result, outputDir: s.folder });
+      requireActiveRequest();
       s.setDownloading(false);
       const started = Date.now();
       s.setNow(started);
@@ -569,6 +584,7 @@ export function jobActions(s: Session) {
       s.setError(errorText(caught));
       s.setView("progress");
     } finally {
+      s.gate.current = false;
       s.ownsRun.current = false;
       s.setDownloading(false);
       s.setNow(Date.now());
@@ -578,6 +594,9 @@ export function jobActions(s: Session) {
 
   async function runLive() {
     if (s.gate.current || s.running) return;
+    s.gate.current = true; s.holdQueue.current = false; s.skipActive.current = false;
+    s.setError(""); s.setSteps(freshSteps(s.audioOnly, s.textOnly));
+    s.setRunning(true); s.ownsRun.current = true; s.setView("progress");
     try {
       let source = s.composeVideo;
       if (s.mode === "link") {
@@ -592,8 +611,10 @@ export function jobActions(s: Session) {
         source = s.audioOnly
           ? await invoke<string>("prepare_listen", { url: s.composeLink.trim(), outputDir: s.folder })
           : await invoke<string>("download_video", { url: s.composeLink.trim(), outputDir: s.folder });
+        requireActiveRequest();
         if (s.audioOnly) {
           const outline = await invoke<{ count: number }>("listen_part", { root: source, part: 1 });
+          requireActiveRequest();
           if (outline.count > 0) {
             s.setVideo(source);
             s.setComposeVideo(source);
@@ -606,7 +627,6 @@ export function jobActions(s: Session) {
         s.setVideo(source);
         s.setComposeVideo(source);
         s.setDownloading(false);
-        s.ownsRun.current = false;
       }
       if (!source) return;
       const existing = await existingResult(source, {
@@ -619,6 +639,7 @@ export function jobActions(s: Session) {
         skipTranslate: s.skipTranslate,
         render: s.render,
       });
+      requireActiveRequest();
       if (existing) {
         openFinished(source, existing, s.textOnly);
         return;
@@ -661,6 +682,7 @@ export function jobActions(s: Session) {
       s.ownsRun.current = false;
       s.setDownloading(false);
       s.setRunning(false);
+      s.gate.current = false;
     }
   }
 
@@ -682,6 +704,7 @@ export function jobActions(s: Session) {
 
   async function stop() {
     s.holdQueue.current = true;
+    s.setRunNotice("Đang dừng… Chờ tác vụ hiện tại kết thúc trước khi chạy việc mới.");
     await invoke("cancel_dub");
   }
 

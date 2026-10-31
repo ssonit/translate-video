@@ -57,6 +57,10 @@ export default function ListenPart({
   const [note, setNote] = useState("");
   const [error, setError] = useState("");
   const [translating, setTranslating] = useState(false);
+  const [stopping, setStopping] = useState(false);
+  const translationCanceled = useRef(false);
+  const translationInFlight = useRef(false);
+  const [loadEpoch, setLoadEpoch] = useState(0);
   const [making, setMaking] = useState(false);
   const [playing, setPlaying] = useState(false);
   const [hasAudio, setHasAudio] = useState(false);
@@ -68,6 +72,7 @@ export default function ListenPart({
       paused.current = true;
       node.current?.pause();
       setPlaying(false);
+      if (translating || making) void cancelWork();
     }
   }, [active]);
 
@@ -135,6 +140,9 @@ export default function ListenPart({
 
   useEffect(() => {
     const token = ++gen.current;
+    let requestPending = false;
+    translationCanceled.current = false;
+    setStopping(false);
     engine.current?.cancel();
     clearAudio();
     paused.current = false;
@@ -146,7 +154,7 @@ export default function ListenPart({
     void (async () => {
       try {
         const outline = await invoke<Outline>("listen_part", { root, part: index, target: lang });
-        if (gen.current !== token) return;
+        if (gen.current !== token || translationCanceled.current) return;
         setCount(outline.count);
         setWords(outline.words);
         setSource(outline.source);
@@ -156,21 +164,49 @@ export default function ListenPart({
           return;
         }
         setNote("Đang dịch phần này");
+        requestPending = true;
+        translationInFlight.current = true;
         const translated = await invoke<string>("translate_listen_part", { root, part: index, target: lang });
-        if (gen.current !== token) return;
+        if (gen.current !== token || translationCanceled.current) return;
         setText(translated);
         setNote("");
       } catch (caught) {
         if (gen.current !== token) return;
+        if (translationCanceled.current) return;
         setError(errorText(caught));
         setNote("");
       } finally {
-        if (gen.current === token) setTranslating(false);
+        requestPending = false;
+        if (gen.current === token) {
+          translationInFlight.current = false;
+          setTranslating(false); setStopping(false);
+          if (translationCanceled.current) setNote("Đã hủy dịch phần này.");
+        }
       }
     })();
+    return () => {
+      if (gen.current === token) gen.current += 1;
+      if (requestPending) void invoke("cancel_dub").catch(() => {});
+    };
     // clearAudio is stable enough for this load; recreating it would restart the request.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [root, index, lang, skipTranslate]);
+  }, [root, index, lang, skipTranslate, loadEpoch]);
+
+  async function cancelWork() {
+    if (translating) {
+      translationCanceled.current = true;
+      setStopping(true);
+      setNote("Đang dừng dịch, chờ yêu cầu hiện tại kết thúc…");
+      try { if (translationInFlight.current) await invoke("cancel_dub"); }
+      catch (caught) { setError(errorText(caught)); setStopping(false); }
+      return;
+    }
+    gen.current += 1;
+    engine.current?.stop();
+    clearAudio();
+    setMaking(false);
+    setNote("Đã hủy tạo giọng. Bạn có thể tạo lại.");
+  }
 
   useEffect(() => {
     if (!voice) return;
@@ -259,6 +295,8 @@ export default function ListenPart({
         </div>
       ) : null}
       <p className="part-note">{note || "Phát ngay từng câu để nghe. Chưa ghi file audio."}</p>
+      {translating || making ? <button type="button" className="link" disabled={stopping} onClick={() => void cancelWork()}>{stopping ? "Đang dừng…" : translating ? "Hủy dịch" : "Hủy tạo giọng"}</button> : null}
+      {!translating && translationCanceled.current ? <button type="button" className="link" onClick={() => setLoadEpoch(epoch => epoch + 1)}>Dịch lại phần này</button> : null}
       <p className="preview-hint">Bản nghe trước chưa qua kiểm tra tên và thuật ngữ như khi xuất audio.</p>
       {error ? <p className="error">{error}</p> : null}
       <textarea

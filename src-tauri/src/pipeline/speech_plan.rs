@@ -6,6 +6,22 @@ use crate::timeline::{room, Slot};
 const GROUP_SECONDS: f64 = 8.0;
 const GROUP_GAP: f64 = 0.45;
 
+fn text_limit(text: &str) -> usize {
+    // The 75-character subtitle budget fragments spaced speech before it is
+    // translated. Keep a bounded spoken phrase; subtitle layout is independent.
+    if text.split_whitespace().count() >= 4
+        && !text.chars().any(|c| matches!(c as u32, 0x3400..=0x9fff | 0x3040..=0x30ff | 0xac00..=0xd7af))
+    { 220 } else { MAX_LINE_CHARS }
+}
+
+pub(super) fn parts(cue: &Cue) -> Vec<String> {
+    let text = cue.text.trim();
+    if text.is_empty() { return Vec::new(); }
+    let by_text = text.chars().count().div_ceil(text_limit(text));
+    let by_time = if valid(cue) { ((cue.end - cue.start) / GROUP_SECONDS).ceil() as usize } else { 1 };
+    crate::ollama::mechanical_split(text, by_text.max(by_time).clamp(1, 64))
+}
+
 fn sentence_end(text: &str) -> bool {
     text.trim_end_matches(|ch: char| {
         ch.is_whitespace() || matches!(ch, '"' | '\'' | '”' | '’' | '」' | '』')
@@ -26,7 +42,8 @@ pub(super) fn group_fragments(cues: &[Cue]) -> Vec<Cue> {
                 && valid(cue)
                 && (-0.02..=GROUP_GAP).contains(&gap)
                 && cue.end - previous.start <= GROUP_SECONDS
-                && previous.text.chars().count() + cue.text.chars().count() + 1 <= MAX_LINE_CHARS
+                && previous.text.chars().count() + cue.text.chars().count() + 1
+                    <= text_limit(&format!("{} {}", previous.text, cue.text))
                 && !sentence_end(&previous.text)
                 && !previous.text.trim().is_empty()
                 && !cue.text.trim().is_empty()
@@ -146,5 +163,27 @@ mod tests {
             timed_prompt("translate".into(), &[0], None, "vi"),
             "translate"
         );
+    }
+
+    #[test]
+    fn spaced_speech_keeps_money_and_context_in_a_single_window() {
+        let input = vec![cue(0.0, 2.0, "my business in the past twelve months has done just"),
+            cue(2.0, 4.0, "under $5 million of top line revenue and it is because"),
+            cue(4.0, 6.0, "everyone is able to work faster using these systems.")];
+        let grouped = group_fragments(&input);
+        assert_eq!(grouped.len(), 1);
+        assert_eq!(parts(&grouped[0]), vec![input.iter().map(|c| c.text.as_str()).collect::<Vec<_>>().join(" ")]);
+        assert_eq!((grouped[0].start, grouped[0].end), (0.0, 6.0));
+    }
+
+    #[test]
+    fn long_phrases_remain_bounded_and_keep_every_word() {
+        let text = "names numbers and negations must stay intact ".repeat(12);
+        let c = cue(0.0, 25.0, &text);
+        let pieces = parts(&c);
+        assert!(pieces.len() >= 4);
+        assert_eq!(pieces.join(" ").split_whitespace().collect::<Vec<_>>(), text.split_whitespace().collect::<Vec<_>>());
+        let chinese = cue(0.0, 4.0, &"中".repeat(100));
+        assert_eq!(parts(&chinese).len(), 2);
     }
 }

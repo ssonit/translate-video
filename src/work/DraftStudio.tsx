@@ -7,7 +7,7 @@ import { lockNote, summarize, type SetupSummary, type ToolStatus } from "../setu
 import { StyleEditor } from "./StyleEditor";
 import { LANGUAGES, errorText, fileName } from "./format";
 import { MODEL_HINTS } from "./models";
-import { LOOK_AHEAD_SECONDS, missingRegion, playbackInterrupted, regionQueue, splitText, type DraftClip, type DraftCue, type DraftOptions, type DraftPatch, type DraftRegion, type DraftView } from "./demand";
+import { LOOK_AHEAD_SECONDS, missingRegion, playbackInterrupted, regionQueue, speechReview, splitText, type DraftClip, type DraftCue, type DraftOptions, type DraftPatch, type DraftRegion, type DraftView } from "./demand";
 import type { StructureEdit } from "./types";
 import "./DraftStudio.css";
 
@@ -66,7 +66,11 @@ export function DraftStudio({ root, initial, active, lock: globalLock, sourceLoc
   const busy = operation !== "";
 
   function adopt(next: DraftView, keepConfig = true) {
-    if (!alive.current || next.root !== root) return;
+    if (!alive.current) return;
+    if (next.root !== root) {
+      setError("Bản nháp trả về không khớp nguồn đang mở. Hãy quay lại và chọn lại nguồn.");
+      return;
+    }
     const old = state.current;
     const keep = keepConfig && old.config && old.view && JSON.stringify(old.config) !== JSON.stringify(old.view.options);
     state.current.view = next;
@@ -105,6 +109,7 @@ export function DraftStudio({ root, initial, active, lock: globalLock, sourceLoc
       if (state.current.operation) return false;
       pause(); await queue.current?.idle();
       const s = state.current;
+      if (!s.view || !s.config) return true;
       return Object.keys(s.patches).length || JSON.stringify(s.config) !== JSON.stringify(s.view?.options) ? saveAll() : true;
     });
     return () => onGuard(null);
@@ -120,7 +125,9 @@ export function DraftStudio({ root, initial, active, lock: globalLock, sourceLoc
       if (!live || !event.payload.serial.startsWith(`${owner}:`) || event.payload.view.root !== root) return;
       state.current.clips = event.payload.clips; adopt(event.payload.view);
     });
-    if (!initial) {
+    if (initial) {
+      if (!state.current.view || !state.current.config) adopt(initial, false);
+    } else {
       setOperation("Đang mở nháp…");
       opening.current ??= invoke<DraftView>("read_draft", { root });
       void opening.current.then(v => { if (live) adopt(v, false); }).catch(e => { if (live) setError(errorText(e)); }).finally(() => { if (live) setOperation(""); });
@@ -129,6 +136,12 @@ export function DraftStudio({ root, initial, active, lock: globalLock, sourceLoc
     // A source owns its queue and callbacks for its entire mounted lifetime.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [root]);
+  useEffect(() => {
+    // Initial data may arrive after mount or survive a hot refresh with empty
+    // hook state. Do not replace an already loaded draft (or unsaved edits).
+    if (initial && (!state.current.view || !state.current.config)) adopt(initial, false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [root, initial]);
   useEffect(() => {
     if (!active) pause();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -341,7 +354,18 @@ export function DraftStudio({ root, initial, active, lock: globalLock, sourceLoc
   }, [view?.cues, index, query]);
   const currentCue = view?.cues.find(c => c.line.start <= time && c.line.end > time);
   const subtitle = mode === "source" ? "" : currentCue?.line.translation;
-  if (!view || !config) return <div className="draft-studio"><p role="status">{error || operation || "Đang mở nguồn…"}</p><button type="button" onClick={() => void invoke<DraftView>("read_draft", { root }).then(v => adopt(v, false)).catch(e => setError(errorText(e)))}>Nạp lại</button><button type="button" className="link" onClick={onBack}>Quay lại</button></div>;
+  if (!view || !config) return <div className="draft-studio"><section className="draft-opening">
+    <p className="kicker">Bản nháp trên máy</p>
+    <h2>{error ? "Chưa mở được bản nháp" : "Đang mở nguồn…"}</h2>
+    <p role={error ? "alert" : "status"}>{error || operation || "Đang nạp video và lời thoại đã lưu."}</p>
+    <small title={root}>{fileName(root)}</small>
+    <div><button type="button" disabled={busy} onClick={() => {
+      setError(""); setOperation("Đang mở nháp…");
+      void invoke<DraftView>("read_draft", { root }).then(v => adopt(v, false))
+        .catch(e => { if (alive.current) setError(errorText(e)); })
+        .finally(() => { if (alive.current) setOperation(""); });
+    }}>Nạp lại</button><button type="button" className="link" onClick={onBack}>Chọn nguồn khác</button></div>
+  </section></div>;
   const render = config.render;
   const outputRatio = render.aspect === "original" ? ratio : render.aspect === "9:16" ? 9 / 16 : render.aspect === "16:9" ? 16 / 9 : 1;
   const height = width / outputRatio;
@@ -353,6 +377,8 @@ export function DraftStudio({ root, initial, active, lock: globalLock, sourceLoc
   const fontSize = Math.min(width, height) * render.size / 100;
   const online = !["local", "deepseek-local"].includes(config.provider);
   const hint = MODEL_HINTS[config.provider];
+  const review = speechReview(view);
+  const speechIssues = new Map((dirty ? [] : review.warnings).map(w => [w.id, w]));
   return <div className="draft-studio"><div className="draft-body pane-scroll">
     <header className="draft-heading"><div><p className="kicker">Bản nháp · lưu trên máy</p><h2 title={view.source}>{fileName(view.source || root)}</h2><p>Mở nguồn trước. Chỉ chuẩn bị phần đang xem/nghe; tạo file đầy đủ khi bấm Xuất.</p></div><button type="button" className="link" disabled={busy} onClick={() => void leave()}>Đổi nguồn</button></header>
     <div className="draft-grid">
@@ -381,7 +407,7 @@ export function DraftStudio({ root, initial, active, lock: globalLock, sourceLoc
         <div className="draft-section-head"><h3>Lời thoại</h3><button type="button" className="link" disabled={busy || rangeBusy || !!sourceLock} onClick={() => void prepare()}>{view.cues.length ? "Nạp lời gốc" : "Lấy lời gốc"}</button></div>
         {!view.cues.length ? <div className="draft-empty"><strong>Chưa chép lời</strong><p>Phát nguồn ngay, hoặc lấy lời gốc để xem và chỉnh. Bước này không dịch, không tạo giọng.</p></div> : <>
           <input className="draft-search" aria-label="Tìm câu" placeholder="Tìm trong lời thoại…" value={query} onChange={e => setQuery(e.target.value)} />
-          <ol className="draft-cues">{visible.map(c => <li key={c.id}><button type="button" data-selected={c.id === selected} onClick={() => { setSelected(c.id); setSplit(null); seek(c.line.start); }}><span>{clockText(c.line.start)}</span><strong>{c.line.translation || c.line.source}</strong><small>{c.authored ? "Bạn đã sửa" : view.ready.includes(c.id) ? "Có giọng" : c.line.translation ? "Có chữ" : "Lời gốc"}</small></button></li>)}</ol>
+          <ol className="draft-cues">{visible.map(c => <li key={c.id}><button type="button" data-selected={c.id === selected} onClick={() => { setSelected(c.id); setSplit(null); seek(c.line.start); }}><span>{clockText(c.line.start)}</span><strong>{c.line.translation || c.line.source}</strong><small>{speechIssues.has(c.id) ? `Có thể cắt ${speechIssues.get(c.id)!.lostSeconds.toFixed(2)}s` : c.authored ? "Bạn đã sửa" : view.ready.includes(c.id) ? "Có giọng" : c.line.translation ? "Có chữ" : "Lời gốc"}</small></button></li>)}</ol>
           {!query && <div className="draft-pagination"><button className="link" type="button" disabled={index < 40} onClick={() => setSelected(view.cues[Math.max(0, index - 40)].id)}>← Trước</button><small>Câu {Math.max(1, index + 1)} / {view.cues.length}</small><button className="link" type="button" disabled={index + 40 >= view.cues.length} onClick={() => setSelected(view.cues[Math.min(view.cues.length - 1, index + 40)].id)}>Sau →</button></div>}
           {current && <div className="draft-cue-edit">
             <label>Lời gốc<textarea value={edited?.source ?? current.line.source} disabled={busy} onFocus={pause} onChange={e => patch({ source: e.target.value })} /></label>
@@ -404,6 +430,8 @@ export function DraftStudio({ root, initial, active, lock: globalLock, sourceLoc
     </div>{config.provider === "deepseek-local" && !config.skipTranslate && <DeepseekServerRow server={deepseek} lockStop={busy || rangeBusy} after={changed} />}<button type="button" disabled={busy || !configDirty} onClick={() => void saveAll()}>Lưu cấu hình nháp</button></details>
     <StyleEditor audioOnly={config.audioOnly} value={config.render} onChange={render => configPatch({ render })} source={view.source} disabled={busy} captions={config.textOnly || config.burn} presets={[]} onSave={() => setNote("Lưu bộ cài đặt dùng mục Bộ cài đặt của app.")} onApply={() => {}} onDelete={() => {}} />
     {sample && <section className="draft-sample"><strong>Đoạn thử · căn từ phần đã chuẩn bị</strong><video src={sample} controls playsInline /><button className="link" type="button" onClick={() => setSample("")}>Đóng đoạn thử</button></section>}
-    </div><footer className="draft-footer"><div><strong>{dirty ? "Có thay đổi chưa lưu" : "Nháp đã lưu"}</strong><small>Bản xuất trước là một phiên bản riêng.</small></div><div><button type="button" disabled={busy || !dirty} onClick={() => void saveAll()}>Lưu nháp</button><button type="button" className="link" disabled={busy || !!lock || config.audioOnly || time >= view.duration - 0.1} onClick={() => void sampleVideo()}>Dựng thử 8 giây</button>{view.lastExport && <button type="button" className="link" disabled={busy || rangeBusy} onClick={() => { pause(); onResult(view.lastExport!); }}>Mở bản xuất trước</button>}<button type="button" className="check" disabled={busy || !!lock} onClick={() => void exportVideo()}>{config.audioOnly ? "Xuất audio" : "Xuất video"}</button></div></footer>
+    </div>
+    {!dirty && review.warnings.length > 0 && <div className="draft-speech-review" role="status"><span><strong>{review.warnings.length} câu có nguy cơ bị cắt đuôi · {review.lostSeconds.toFixed(2)} giây.</strong> {review.tentative || view.ready.length < view.cues.length ? "Tạm tính theo phần giọng đã có. " : ""}Kiểm tra lời và mốc trước khi xuất.</span><button type="button" className="link" disabled={busy} onClick={() => { const next = review.warnings.find(w => view.cues.findIndex(c => c.id === w.id) > index) ?? review.warnings[0]; const cue = view.cues.find(c => c.id === next.id); if (cue) { pause(); setQuery(""); setSelected(cue.id); setSplit(null); seek(cue.line.start); } }}>Đến câu cần kiểm tra</button></div>}
+    <footer className="draft-footer"><div><strong>{dirty ? "Có thay đổi chưa lưu" : "Nháp đã lưu"}</strong><small>Bản xuất trước là một phiên bản riêng.</small></div><div><button type="button" disabled={busy || !dirty} onClick={() => void saveAll()}>Lưu nháp</button><button type="button" className="link" disabled={busy || !!lock || config.audioOnly || time >= view.duration - 0.1} onClick={() => void sampleVideo()}>Dựng thử 8 giây</button>{view.lastExport && <button type="button" className="link" disabled={busy || rangeBusy} onClick={() => { pause(); onResult(view.lastExport!); }}>Mở bản xuất trước</button>}<button type="button" className="check" disabled={busy || !!lock} onClick={() => void exportVideo()}>{config.audioOnly ? "Xuất audio" : "Xuất video"}</button></div></footer>
   </div>;
 }

@@ -632,6 +632,30 @@ impl Options {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct SpeechWarning {
+    id: String,
+    lost_seconds: f64,
+    tentative: bool,
+}
+
+// Reuse verified durations; never reread WAVs or trust an old fit-report here.
+fn speech_warnings(cues: &[EditedCue], state: Option<&crate::draft::Status>, duration: f64) -> Vec<SpeechWarning> {
+    let Some(state) = state else { return Vec::new(); };
+    let slots: Vec<_> = cues.iter().map(|cue| crate::timeline::Slot {
+        start: cue.line.start, end: cue.line.end,
+        wav_secs: state.speech_seconds.get(&cue.id).copied().unwrap_or(0.0),
+    }).collect();
+    let mut tentative = false;
+    crate::timeline::place_all(&slots, duration).into_iter().enumerate().filter_map(|(i, p)| {
+        let cue = &cues[i];
+        let Some(&seconds) = state.speech_seconds.get(&cue.id) else { tentative = true; return None; };
+        let lost = seconds / p.speed - p.played;
+        (lost > 0.02).then(|| SpeechWarning { id: cue.id.clone(), lost_seconds: lost, tentative })
+    }).collect()
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct View {
     pub root: String,
     pub source: String,
@@ -644,6 +668,7 @@ pub(crate) struct View {
     pub ready: Vec<String>,
     pub last_export: Option<String>,
     pub warning: Option<String>,
+    pub speech_warnings: Vec<SpeechWarning>,
 }
 
 pub(crate) fn reopen(root: &Path) -> Result<Job, String> {
@@ -884,6 +909,8 @@ fn view_verified(
             .first()
             .map(|v| v.path.clone())
     });
+    let speech_warnings = if options.audio_only || options.text_only { Vec::new() }
+        else { speech_warnings(&cues, state, duration) };
     Ok(View {
         root: job.root.to_string_lossy().into_owned(),
         source: if source.is_file() {
@@ -902,6 +929,7 @@ fn view_verified(
         ready: state.map(|s| s.speech_ready.clone()).unwrap_or_default(),
         last_export,
         warning,
+        speech_warnings,
     })
 }
 
@@ -1671,6 +1699,33 @@ mod tests {
         assert_eq!(ready.len(), 2);
         assert!(ready.iter().all(|c| c.tentative));
     }
+    #[test]
+    fn cut_warning_uses_verified_audio_and_the_export_placement() {
+        let f = fixture();
+        let job = &f.job;
+        let doc = document(job).unwrap();
+        for index in 0..2 {
+            let ticket = crate::draft::speech_ticket(&job.line_wav(index + 1), &doc.cues[index].line.translation, "vi", "fixture").unwrap().unwrap();
+            crate::draft::commit_speech(&ticket, &job.line_wav(index + 1), &Pcm { rate: 22050, samples: vec![1; 22050 * 4] }).unwrap();
+        }
+        let state = crate::draft::status(&job.root).unwrap().unwrap();
+        let warnings = speech_warnings(&doc.cues, Some(&state), 10.0);
+        assert_eq!(warnings.len(), 2);
+        let clips = clips_verified(job, 10.0, Some(&state)).unwrap();
+        for warning in &warnings {
+            let clip = clips.iter().find(|c| c.id == warning.id).unwrap();
+            assert!((warning.lost_seconds - (4.0 / clip.speed - clip.played)).abs() < 0.000001);
+            assert!(!warning.tentative);
+        }
+        std::fs::write(job.line_wav(1), b"damaged").unwrap();
+        let state = crate::draft::status(&job.root).unwrap().unwrap();
+        let warnings = speech_warnings(&doc.cues, Some(&state), 10.0);
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].id, doc.cues[1].id);
+        assert!(warnings[0].tentative);
+        assert!(speech_warnings(&doc.cues, None, 10.0).is_empty());
+    }
+
     #[test]
     #[ignore]
     fn benchmark_verified_preview_snapshot() {

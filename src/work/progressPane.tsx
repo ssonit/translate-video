@@ -60,6 +60,7 @@ export function ProgressPane({
   lock: string; onTools: () => void;
 }) {
   const activeStep = steps.find((step) => step.state === "running");
+  const finalizing = running && !downloading && steps.length > 0 && steps.every(step => step.state === "done" || step.state === "skipped");
   const ran = [`đã chạy ${duration(elapsed)}`, remainingText(remaining), queueCount > 0 ? `còn ${queueCount} trong hàng` : ""]
     .filter(Boolean)
     .join(" · ");
@@ -68,7 +69,7 @@ export function ProgressPane({
       {running && queueCount>0 ? <button type="button" className="link" onClick={onSkipCurrent}>Bỏ qua video này, chạy video kế</button> : null}
       <div className="overall" aria-live="polite">
         <div className="overall-row">
-          <strong>{nameReview ? "Đang chờ bạn kiểm tra tên" : liveFraction !== null ? `${Math.round(liveFraction * 100)}%` : liveDetail}</strong>
+          <strong>{nameReview ? "Đang chờ bạn kiểm tra tên" : finalizing ? "Đang hoàn tất kết quả…" : liveFraction !== null ? `${Math.round(liveFraction * 100)}%` : liveDetail}</strong>
           <span>
             {downloading
               ? download.detail
@@ -92,8 +93,8 @@ export function ProgressPane({
             <i style={{ width: download.progress === null ? "100%" : `${download.progress * 100}%` }} />
           </div>
         ) : (
-          <div className="bar" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(fraction * 100)}>
-            <i style={{ width: `${fraction * 100}%` }} />
+          <div className={running && (finalizing || fraction === 0) ? "bar is-wait" : "bar"} role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={running && (finalizing || fraction === 0) ? undefined : Math.round(fraction * 100)} aria-label={finalizing ? "Đang lưu kết quả" : "Tiến độ xử lý"}>
+            <i style={{ width: running && (finalizing || fraction === 0) ? "100%" : `${fraction * 100}%` }} />
           </div>
         )}
       </div>

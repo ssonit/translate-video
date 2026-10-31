@@ -273,9 +273,9 @@ export function Composer({
                   <button
                     type="button"
                     onClick={() => void onPreview()}
-                    disabled={running || previewing || voice === "" || textOnly}
+                    disabled={!previewing && (running || voice === "" || textOnly)}
                   >
-                    {previewing ? "Đang đọc" : "Nghe thử"}
+                    {previewing ? "Dừng thử giọng" : "Nghe thử"}
                   </button>
                 </span>
               ) : (

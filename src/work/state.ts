@@ -1,6 +1,6 @@
 import { readQueueHistory, readQueuePolicy } from "../queueControl";
 import { readRender, readPresets } from "./renderSettings";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { readSavedQueue, restoreQueue, type QueueJob } from "../queue";
 import type { WatchUpdate } from "../WatchLive";
 import { freshSteps, LANGUAGES } from "./format";
@@ -34,6 +34,8 @@ export function useWorkState() {
   const [voice, setVoice] = useState("");
   const [voiceNote, setVoiceNote] = useState("");
   const [previewing, setPreviewing] = useState(false);
+  const previewAbort = useRef<AbortController | null>(null);
+  useEffect(() => () => previewAbort.current?.abort(), []);
   const [mode, setMode] = useState<"file" | "link">("link");
   const [link, setLink] = useState("");
   const [composeVideo, setComposeVideo] = useState("");
@@ -44,6 +46,7 @@ export function useWorkState() {
   const queueHistoryRef=useRef(queueHistory);
   const skipActive=useRef(false);
   const [queueNote, setQueueNote] = useState("");
+  const [runNotice, setRunNotice] = useState("");
   const [downloading, setDownloading] = useState(false);
   const [download, setDownload] = useState<{ detail: string; progress: number | null }>({
     detail: "",
@@ -153,6 +156,7 @@ export function useWorkState() {
     setVoiceNote,
     previewing,
     setPreviewing,
+    previewAbort,
     mode,
     setMode,
     link,
@@ -166,6 +170,8 @@ export function useWorkState() {
     queuePolicy,setQueuePolicy,queueHistory,setQueueHistory,queueHistoryRef,skipActive,runPauseRef,
     queueNote,
     setQueueNote,
+    runNotice,
+    setRunNotice,
     downloading,
     setDownloading,
     download,
