@@ -273,21 +273,21 @@ export function WatchPane({
                   </button>
                 )}
                 {saveVideo}
+              </div>
                 {captioning ? (
-                  <>
+                  <div className="result-progress">
                     <span className="caption-wait">
                       {captionProgress === null ? "Đang ghi chữ…" : `Đang ghi chữ… ${Math.round(captionProgress * 100)}%`}
                     </span>
                     <button type="button" className="link" onClick={() => void onStop()}>
                       Dừng
                     </button>
-                  </>
+                  </div>
                 ) : null}
+              <div className="result-tools">
                 <button type="button" className="link result-again" onClick={() => void onAgain()} disabled={blocked || textEditing || edits.length > 0}>
                   Làm lại
                 </button>
-              </div>
-              <div className="result-tools">
                 {isAudio(result) ? (
                   <button type="button" className="link" onClick={() => void onOpen(result)}>
                     Mở bằng trình phát

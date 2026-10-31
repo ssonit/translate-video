@@ -2302,17 +2302,31 @@ audio.draft-media {
   font-size: 0.9rem;
 }
 
-.watch .result-primary .result-again {
-  margin-left: auto;
-  border-color: var(--line-strong);
-  background: transparent;
-  color: var(--text);
+.watch .result-progress {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  min-width: 0;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--inset);
 }
 
-.watch .result-primary .result-again:hover:not(:disabled) {
-  border-color: var(--accent);
-  background: var(--accent);
-  color: var(--on-accent);
+.watch .result-progress .caption-wait {
+  flex: 1 1 140px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 0.84rem;
+}
+
+.watch .result-progress .link {
+  flex: 0 0 auto;
+  padding: 0.46rem 0.9rem;
+  font-size: 0.9rem;
 }
 
 .watch .result-tools {
