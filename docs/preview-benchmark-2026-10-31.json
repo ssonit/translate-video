@@ -1,0 +1,121 @@
+{
+  "profile": "debug",
+  "cue_count": 2185,
+  "wav_bytes": 192813140,
+  "cache": "warm; first iteration after fixture creation is not cold disk",
+  "components": [
+    {
+      "clips_ms": 6778.4839,
+      "indexed_ms": 3.9642999999999997,
+      "round": 0,
+      "status_ms": 14639.706499999998,
+      "vec_ms": 66.0327
+    },
+    {
+      "clips_ms": 6825.6704,
+      "indexed_ms": 3.8859,
+      "round": 1,
+      "status_ms": 14616.6038,
+      "vec_ms": 64.88080000000001
+    },
+    {
+      "clips_ms": 6764.5476,
+      "indexed_ms": 3.9455,
+      "round": 2,
+      "status_ms": 14691.6814,
+      "vec_ms": 72.0282
+    }
+  ],
+  "rows": [
+    {
+      "milliseconds": 50301.9385,
+      "round": 0,
+      "shared": false
+    },
+    {
+      "milliseconds": 22856.631400000002,
+      "round": 0,
+      "shared": true
+    },
+    {
+      "milliseconds": 22259.8455,
+      "round": 1,
+      "shared": true
+    },
+    {
+      "milliseconds": 52642.3117,
+      "round": 1,
+      "shared": false
+    },
+    {
+      "milliseconds": 52817.517,
+      "round": 2,
+      "shared": false
+    },
+    {
+      "milliseconds": 22484.7608,
+      "round": 2,
+      "shared": true
+    },
+    {
+      "milliseconds": 21895.1112,
+      "round": 3,
+      "shared": true
+    },
+    {
+      "milliseconds": 52985.8165,
+      "round": 3,
+      "shared": false
+    },
+    {
+      "milliseconds": 52607.4751,
+      "round": 4,
+      "shared": false
+    },
+    {
+      "milliseconds": 21961.5315,
+      "round": 4,
+      "shared": true
+    },
+    {
+      "milliseconds": 22052.528899999998,
+      "round": 5,
+      "shared": true
+    },
+    {
+      "milliseconds": 51463.0127,
+      "round": 5,
+      "shared": false
+    },
+    {
+      "milliseconds": 52432.7859,
+      "round": 6,
+      "shared": false
+    },
+    {
+      "milliseconds": 21911.8069,
+      "round": 6,
+      "shared": true
+    },
+    {
+      "milliseconds": 21928.485399999998,
+      "round": 7,
+      "shared": true
+    },
+    {
+      "milliseconds": 52093.511900000005,
+      "round": 7,
+      "shared": false
+    },
+    {
+      "milliseconds": 52067.8046,
+      "round": 8,
+      "shared": false
+    },
+    {
+      "milliseconds": 21937.0421,
+      "round": 8,
+      "shared": true
+    }
+  ]
+}

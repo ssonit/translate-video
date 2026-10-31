@@ -371,23 +371,27 @@ pub(super) fn speech_slots(
     lines: &[TranslatedLine],
 ) -> Result<Vec<crate::timeline::Slot>, String> {
     let status = crate::draft::status(&job.root)?;
+    speech_slots_verified(job, lines, status.as_ref())
+}
+
+fn speech_slots_verified(
+    job: &Job,
+    lines: &[TranslatedLine],
+    status: Option<&crate::draft::Status>,
+) -> Result<Vec<crate::timeline::Slot>, String> {
     lines
         .iter()
         .enumerate()
         .map(|(i, line)| {
-            let verified = status.as_ref().is_none_or(|s| {
-                s.manifest
-                    .cues
-                    .get(i)
-                    .is_some_and(|cue| s.speech_ready.contains(&cue.id))
-            });
-            let seconds = if verified {
+            let seconds = if let Some(state) = status {
+                state.manifest.cues.get(i)
+                    .and_then(|cue| state.speech_seconds.get(&cue.id))
+                    .copied().unwrap_or(0.0)
+            } else {
                 crate::wav::read_wav(&job.line_wav(i + 1))
                     .ok()
                     .map(|pcm| pcm.samples.len() as f64 / f64::from(pcm.rate))
                     .unwrap_or(0.0)
-            } else {
-                0.0
             };
             Ok(crate::timeline::Slot {
                 start: line.start,
@@ -399,7 +403,16 @@ pub(super) fn speech_slots(
 }
 
 pub(crate) fn clips(job: &Job, duration: f64) -> Result<Vec<Clip>, String> {
-    let Some(state) = crate::draft::status(&job.root)? else {
+    let state = crate::draft::status(&job.root)?;
+    clips_verified(job, duration, state.as_ref())
+}
+
+fn clips_verified(
+    job: &Job,
+    duration: f64,
+    state: Option<&crate::draft::Status>,
+) -> Result<Vec<Clip>, String> {
+    let Some(state) = state else {
         return Ok(Vec::new());
     };
     let words = crate::timing::read(&job.root)?;
@@ -413,7 +426,7 @@ pub(crate) fn clips(job: &Job, duration: f64) -> Result<Vec<Clip>, String> {
         }
         tentative.push(unknown);
     }
-    let slots = speech_slots(job, &words)?;
+    let slots = speech_slots_verified(job, &words, Some(state))?;
     let placed = crate::timeline::place_all(&slots, duration);
     Ok(placed
         .into_iter()
@@ -449,8 +462,9 @@ fn publish_region(
     serial: &str,
     cancel: &AtomicBool,
 ) -> Result<(), String> {
-    let view = view(job, cancel)?;
-    let clips = clips(job, view.duration)?;
+    let state = crate::draft::status(&job.root)?;
+    let view = view_verified(job, cancel, state.as_ref())?;
+    let clips = clips_verified(job, view.duration, state.as_ref())?;
     for clip in &clips {
         app.asset_protocol_scope()
             .allow_file(&clip.path)
@@ -794,6 +808,15 @@ pub(crate) fn choice(
 }
 
 pub(crate) fn view(job: &Job, cancel: &AtomicBool) -> Result<View, String> {
+    let state = crate::draft::status(&job.root)?;
+    view_verified(job, cancel, state.as_ref())
+}
+
+fn view_verified(
+    job: &Job,
+    cancel: &AtomicBool,
+    state: Option<&crate::draft::Status>,
+) -> Result<View, String> {
     let options = options(job)?;
     let warning = if !options.skip_translate
         && job.translation_path().exists()
@@ -876,9 +899,7 @@ pub(crate) fn view(job: &Job, cancel: &AtomicBool) -> Result<View, String> {
         names_reviewed: read_json::<crate::names::NameList>(&job.names_path())
             .ok()
             .is_some_and(|n| n.confirmed),
-        ready: crate::draft::status(&job.root)?
-            .map(|s| s.speech_ready)
-            .unwrap_or_default(),
+        ready: state.map(|s| s.speech_ready.clone()).unwrap_or_default(),
         last_export,
         warning,
     })
@@ -1331,6 +1352,9 @@ mod tests {
         }
     }
     fn fixture() -> Fixture {
+        fixture_with_count(3)
+    }
+    fn fixture_with_count(count: usize) -> Fixture {
         let root = std::env::temp_dir().join(format!("demand-draft-{}", crate::history::new_id()));
         std::fs::create_dir_all(root.join("output")).unwrap();
         std::fs::write(root.join("clip.mp4"), b"source").unwrap();
@@ -1349,7 +1373,7 @@ mod tests {
         };
         write_json(&job.settings_path(), &config.settings()).unwrap();
         write_json(&job.root.join("draft-options.json"), &config).unwrap();
-        let words: Vec<_> = (0..3)
+        let words: Vec<_> = (0..count)
             .map(|i| TranslatedLine {
                 start: i as f64 * 3.0,
                 end: i as f64 * 3.0 + 2.0,
@@ -1381,7 +1405,10 @@ mod tests {
         .unwrap()
         .unwrap();
         lease.commit_translation(&words).unwrap();
-        for i in 0..3 {
+        if count > 3 {
+            crate::draft::benchmark_speech(&job, &words);
+        }
+        for i in 0..if count > 3 { 0 } else { count } {
             let path = job.line_wav(i + 1);
             let ticket = crate::draft::speech_ticket(&path, &words[i].translation, "vi", "fixture")
                 .unwrap()
@@ -1643,6 +1670,186 @@ mod tests {
         let ready = clips(&f.job, 10.0).unwrap();
         assert_eq!(ready.len(), 2);
         assert!(ready.iter().all(|c| c.tentative));
+    }
+    #[test]
+    #[ignore]
+    fn benchmark_verified_preview_snapshot() {
+        let fixture = fixture_with_count(2185);
+        let job = &fixture.job;
+        let duration = 6555.0;
+        let mut rows = Vec::new();
+        for round in 0..9 {
+            for shared in if round % 2 == 0 {
+                [false, true]
+            } else {
+                [true, false]
+            } {
+                let started = std::time::Instant::now();
+                let state = crate::draft::status(&job.root).unwrap().unwrap();
+                let status_ms = started.elapsed().as_secs_f64() * 1000.0;
+                let ready = state.speech_ready.clone();
+                let result = if shared {
+                    clips_verified(job, duration, Some(&state)).unwrap()
+                } else {
+                    let second = crate::draft::status(&job.root).unwrap().unwrap();
+                    let words = crate::timing::read(&job.root).unwrap();
+                    let slots = speech_slots(job, &words).unwrap();
+                    let placements = crate::timeline::place_all(&slots, duration);
+                    let doc = document(job).unwrap();
+                    let mut unknown = false;
+                    placements
+                        .into_iter()
+                        .enumerate()
+                        .filter_map(|(index, placement)| {
+                            let cue = &doc.cues[index];
+                            let known = second.speech_ready.contains(&cue.id);
+                            unknown |= !known;
+                            known.then(|| Clip {
+                                id: cue.id.clone(),
+                                path: job.line_wav(index + 1).to_string_lossy().into_owned(),
+                                version: second
+                                    .manifest
+                                    .speech_version(&cue.id)
+                                    .unwrap_or_default()
+                                    .into(),
+                                start: placement.start,
+                                speed: placement.speed,
+                                played: placement.played,
+                                tentative: unknown,
+                            })
+                        })
+                        .collect()
+                };
+                let elapsed = started.elapsed().as_secs_f64() * 1000.0;
+                assert_eq!(ready.len(), 2185);
+                assert_eq!(
+                    serde_json::to_value(&result).unwrap(),
+                    serde_json::to_value(clips_verified(job, duration, Some(&state)).unwrap())
+                        .unwrap()
+                );
+                rows.push(serde_json::json!({"round":round,"shared":shared,"milliseconds":elapsed,"status_ms":status_ms,"remaining_ms":elapsed-status_ms}));
+            }
+        }
+        std::fs::write(job.line_wav(1), b"broken").unwrap();
+        let state = crate::draft::status(&job.root).unwrap().unwrap();
+        assert_eq!(state.speech_ready.len(), 2184);
+        assert_eq!(
+            clips_verified(job, duration, Some(&state)).unwrap().len(),
+            2184
+        );
+        println!("PREVIEW_BENCH {}", serde_json::to_string(&rows).unwrap());
+    }
+    #[test]
+    fn shared_snapshot_matches_clips_and_next_operation_rechecks_modified_pcm() {
+        let fixture = fixture();
+        let job = &fixture.job;
+        let state = crate::draft::status(&job.root).unwrap().unwrap();
+        let expected = serde_json::to_value(clips(job, 10.0).unwrap()).unwrap();
+        assert_eq!(state.speech_seconds.len(), 3);
+        assert!(state.speech_seconds.values().all(|seconds| *seconds == 0.1));
+        assert!(serde_json::to_value(&state).unwrap().get("speechSeconds").is_none());
+        assert_eq!(
+            serde_json::to_value(clips_verified(job, 10.0, Some(&state)).unwrap()).unwrap(),
+            expected
+        );
+        let path = job.line_wav(2);
+        let mut bytes = std::fs::read(&path).unwrap();
+        let last = bytes.len() - 1;
+        bytes[last] ^= 1;
+        std::fs::write(&path, &bytes).unwrap();
+        let words = crate::timing::read(&job.root).unwrap();
+        assert_eq!(speech_slots_verified(job, &words, Some(&state)).unwrap()[1].wav_secs, 0.1);
+        let refreshed = crate::draft::status(&job.root).unwrap().unwrap();
+        assert!(!refreshed.speech_seconds.contains_key("cue-000002"));
+        let clips = clips(job, 10.0).unwrap();
+        assert_eq!(clips.len(), 2);
+        assert!(clips.iter().all(|clip| clip.id != "cue-000002"));
+        std::fs::write(job.line_wav(1), b"truncated").unwrap();
+        assert_eq!(super::clips(job, 10.0).unwrap().len(), 1);
+    }
+
+    #[test]
+    #[ignore]
+    fn benchmark_preview_duration_snapshot() {
+        let fixture = fixture_with_count(2185);
+        let job = &fixture.job;
+        let words = crate::timing::read(&job.root).unwrap();
+        let mut rows = Vec::new();
+        for round in 0..9 {
+            for reread in if round % 2 == 0 { [true, false] } else { [false, true] } {
+                let started = std::time::Instant::now();
+                let state = crate::draft::status(&job.root).unwrap().unwrap();
+                let status_ms = started.elapsed().as_secs_f64() * 1000.0;
+                if reread {
+                    for (index, cue) in state.manifest.cues.iter().enumerate() {
+                        let pcm = crate::wav::read_wav(&job.line_wav(index + 1)).unwrap();
+                        assert_eq!(state.speech_seconds[&cue.id], pcm.samples.len() as f64 / f64::from(pcm.rate));
+                    }
+                }
+                let clips = clips_verified(job, 6555.0, Some(&state)).unwrap();
+                let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+                assert_eq!(clips.len(), words.len());
+                let serialize = std::time::Instant::now();
+                let payload = serde_json::to_vec(&serde_json::json!({
+                    "serial":"benchmark:1", "clips":clips,
+                    "view":{"cues":document(job).unwrap().cues,"ready":state.speech_ready,
+                        "revision":"fixed","root":job.root,"duration":6555.0,
+                        "options":options(job).unwrap()}
+                })).unwrap();
+                rows.push(serde_json::json!({"round":round,"reread":reread,"status_ms":status_ms,
+                    "total_ms":elapsed_ms,"payload_bytes":payload.len(),
+                    "serialize_with_document_ms":serialize.elapsed().as_secs_f64()*1000.0}));
+            }
+        }
+        println!("DURATION_SNAPSHOT {}", serde_json::to_string(&rows).unwrap());
+    }
+
+    #[test]
+    #[ignore]
+    fn benchmark_preview_components() {
+        let fixture = fixture_with_count(2185);
+        for round in 0..3 {
+            let started = std::time::Instant::now();
+            let state = crate::draft::status(&fixture.job.root).unwrap().unwrap();
+            let status_ms = started.elapsed().as_secs_f64() * 1000.0;
+            let started = std::time::Instant::now();
+            let clips = clips_verified(&fixture.job, 6555.0, Some(&state)).unwrap();
+            let clips_ms = started.elapsed().as_secs_f64() * 1000.0;
+            assert_eq!(clips.len(), 2185);
+            let started = std::time::Instant::now();
+            let mut matched = 0;
+            for cue in &state.manifest.cues {
+                matched += usize::from(state.speech_ready.contains(&cue.id));
+                matched += usize::from(
+                    state
+                        .manifest
+                        .cues
+                        .iter()
+                        .find(|old| old.id == cue.id)
+                        .is_some(),
+                );
+            }
+            std::hint::black_box(matched);
+            let vec_ms = started.elapsed().as_secs_f64() * 1000.0;
+            let started = std::time::Instant::now();
+            let ready: std::collections::HashSet<_> = state.speech_ready.iter().collect();
+            let cues: std::collections::HashMap<_, _> = state
+                .manifest
+                .cues
+                .iter()
+                .map(|cue| (&cue.id, cue))
+                .collect();
+            let mut indexed = 0;
+            for cue in &state.manifest.cues {
+                indexed += usize::from(ready.contains(&cue.id));
+                indexed += usize::from(cues.contains_key(&cue.id));
+            }
+            assert_eq!(matched, indexed);
+            println!(
+                "PREVIEW_COMPONENTS {}",
+                serde_json::json!({"round":round,"status_ms":status_ms,"clips_ms":clips_ms,"vec_ms":vec_ms,"indexed_ms":started.elapsed().as_secs_f64()*1000.0})
+            );
+        }
     }
     #[test]
     fn stale_existing_wavs_do_not_influence_trial_or_preview_timing() {

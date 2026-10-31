@@ -4,6 +4,8 @@ App desktop để chọn một video trên máy, tách tiếng, chép lời, d�
 
 Mở **Hướng dẫn** trên thanh điều hướng trong app để xem cách chuẩn bị máy, lồng video đầu tiên, sửa lời và xuất kết quả.
 
+Muốn xem video kèm phụ đề dịch mà không có giọng đọc mới: chọn **Mở nguồn & sửa nháp** → **Phụ đề (không đọc)** → **Phát**. Chế độ này giữ tiếng gốc, chỉ dịch phần đang xem và không tạo hay phát giọng lồng; không cần xuất video để xem.
+
 **Mở nguồn & sửa nháp** mở video gốc trước; **Lấy lời gốc**, **Bản dịch** và **Giọng lồng** chỉ chạy phần bạn yêu cầu. Dịch/giọng nạp trước khoảng 30 giây, tua ưu tiên vùng mới. **Lưu nháp** không dựng MP4; **Nghe câu** tạo lại câu bị sửa; **Xuất video/audio** hoàn tất phần thiếu và xuất bất kỳ lúc nào. **Chạy toàn bộ** và hàng đợi vẫn xử lý thẳng cả nguồn. [Chi tiết triển khai](docs/trien-khai-khi-can-dot-4-2026-10-29.md) · [Kết quả kiểm chứng và giới hạn](docs/nghiem-thu-khi-can-2026-10-29.md).
 
 ## Luồng

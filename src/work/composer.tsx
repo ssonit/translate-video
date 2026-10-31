@@ -483,7 +483,7 @@ export function Composer({
               ? "Nghe từng đoạn trong lúc dịch, xuất audio khi đã xong."
               : "Xem trước trong lúc dịch. Khi xuất, app sẽ kiểm tra tên và căn lại thời gian giọng đọc."}
         </p>
-        <p className="preview-hint">Mở nguồn để xem và sửa nháp trước. Chữ và giọng chỉ chuẩn bị ở vùng yêu cầu; bấm Xuất khi muốn nhận file đầy đủ. Chạy toàn bộ xử lý thẳng cả nguồn theo cấu hình này.</p>
+        <p className="preview-hint">Mở nguồn để xem và sửa nháp trước. Chọn Phụ đề (không đọc) để xem lời dịch cùng tiếng gốc, hoặc Giọng lồng để nghe giọng mới. Chỉ chuẩn bị vùng đang xem; bấm Xuất khi muốn nhận file đầy đủ. Chạy toàn bộ xử lý thẳng cả nguồn theo cấu hình này.</p>
         <p className="output-summary">
           {textOnly ? "Video phụ đề" : audioOnly ? "Audio" : "Video lồng tiếng"} · {languageName(target)}
           {!textOnly && voice ? ` · ${voice}` : ""}

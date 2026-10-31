@@ -1,0 +1,13 @@
+{
+  "profile":"release",
+  "cache":"warm files; new application process per group",
+  "fixture_cues":2185,
+  "event_bytes":951518,
+  "response_bytes":951492,
+  "groups":[
+    {"binary":"baseline","response_ms":[2905.6,2426.2,2426,2571.5,2362.7],"event_ms":[1517.7,1124.5,1064,1290.1,1095.7]},
+    {"binary":"optimized-wav","response_ms":[2035.4,1828.9,1784.4,1819.3,1775],"event_ms":[946.6,795.4,817.6,792.4,787.9]},
+    {"binary":"optimized-wav","response_ms":[1918.7,1959.5,3959.5,1898.3,1802.9],"event_ms":[838.6,971.5,817.2,876.3,803.6]},
+    {"binary":"baseline","response_ms":[2554,2383.8,2351.1,2391.7,3089.1],"event_ms":[1180.5,1139.3,1094.5,1109.5,1719.8]}
+  ]
+}

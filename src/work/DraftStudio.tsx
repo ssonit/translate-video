@@ -7,7 +7,7 @@ import { lockNote, summarize, type SetupSummary, type ToolStatus } from "../setu
 import { StyleEditor } from "./StyleEditor";
 import { LANGUAGES, errorText, fileName } from "./format";
 import { MODEL_HINTS } from "./models";
-import { LOOK_AHEAD_SECONDS, missingRegion, regionQueue, splitText, type DraftClip, type DraftCue, type DraftOptions, type DraftPatch, type DraftRegion, type DraftView } from "./demand";
+import { LOOK_AHEAD_SECONDS, missingRegion, playbackInterrupted, regionQueue, splitText, type DraftClip, type DraftCue, type DraftOptions, type DraftPatch, type DraftRegion, type DraftView } from "./demand";
 import type { StructureEdit } from "./types";
 import "./DraftStudio.css";
 
@@ -213,7 +213,7 @@ export function DraftStudio({ root, initial, active, lock: globalLock, sourceLoc
           if (node && s.view.source) {
             node.playbackRate = s.speed;
             node.volume = s.mode === "voice" ? Math.min(1, s.config.render.audio.original / 100 * (clip && s.config.render.audio.duck ? s.config.render.audio.duckLevel / 100 : 1)) : 1;
-            if (node.paused && !node.ended) void node.play().catch(e => { s.desired = false; setPlaying(false); setError(errorText(e)); });
+            if (node.paused && !node.ended) void node.play().catch(e => { if (!alive.current || !s.desired || playbackInterrupted(e)) return; s.desired = false; setPlaying(false); setError(errorText(e)); });
             if (backdrop.current) {
               backdrop.current.playbackRate = s.speed;
               if (Math.abs(backdrop.current.currentTime - t) > 0.2) backdrop.current.currentTime = t;
@@ -226,7 +226,7 @@ export function DraftStudio({ root, initial, active, lock: globalLock, sourceLoc
             if (currentAudio.current !== key) { a.pause(); a.src = `${convertFileSrc(clip.path)}?v=${encodeURIComponent(clip.version)}`; a.currentTime = offset; currentAudio.current = key; }
             else if (Math.abs(a.currentTime - offset) > 0.25) a.currentTime = offset;
             a.playbackRate = clip.speed * s.speed; a.volume = Math.min(1, s.config.render.audio.voice / 100);
-            if (a.paused) void a.play().catch(e => { s.desired = false; setPlaying(false); setError(errorText(e)); });
+            if (a.paused) void a.play().catch(e => { if (!alive.current || !s.desired || playbackInterrupted(e)) return; s.desired = false; setPlaying(false); setError(errorText(e)); });
           } else { audio.current?.pause(); currentAudio.current = ""; }
           if (!s.singleEnd && s.mode !== "source") demand(t);
           if (s.cursor >= s.view.duration - 0.02 || (s.singleEnd !== null && s.cursor >= s.singleEnd - 0.02)) pause();
@@ -357,7 +357,8 @@ export function DraftStudio({ root, initial, active, lock: globalLock, sourceLoc
     <header className="draft-heading"><div><p className="kicker">Bản nháp · lưu trên máy</p><h2 title={view.source}>{fileName(view.source || root)}</h2><p>Mở nguồn trước. Chỉ chuẩn bị phần đang xem/nghe; tạo file đầy đủ khi bấm Xuất.</p></div><button type="button" className="link" disabled={busy} onClick={() => void leave()}>Đổi nguồn</button></header>
     <div className="draft-grid">
       <section className="draft-preview" aria-label="Nguồn và vùng xem trước">
-        <div className="draft-modes">{([["source", "Nguồn"], ["text", "Bản dịch"], ["voice", "Giọng lồng"]] as const).map(([id, label]) => <button key={id} type="button" aria-pressed={mode === id} disabled={busy || (id !== "source" && !!lock) || (id === "voice" && config.textOnly)} onClick={() => chooseMode(id)}>{label}</button>)}</div>
+        <div className="draft-modes">{([["source", "Nguồn"], ["text", "Phụ đề (không đọc)"], ["voice", "Giọng lồng"]] as const).map(([id, label]) => <button key={id} type="button" aria-pressed={mode === id} disabled={busy || (id !== "source" && !!lock) || (id === "voice" && config.textOnly)} onClick={() => chooseMode(id)}>{label}</button>)}</div>
+        {mode === "text" && <p className="key-note">Xem video gốc kèm phụ đề dịch, giữ tiếng gốc và không tạo hay phát giọng đọc mới. Bấm Phát để xem.</p>}
         <div className="draft-video-well"><div ref={box} className="draft-picture" style={{ aspectRatio: outputRatio, width: `min(100%, ${outputRatio * 58}vh)` }}>
           {view.source && !config.audioOnly ? <>
             {render.framing === "blur" && render.aspect !== "original" && <video ref={backdrop} src={convertFileSrc(view.source)} className="style-backdrop" muted playsInline aria-hidden="true" />}

@@ -1,0 +1,12 @@
+{
+  "profile": "release",
+  "cache": "warm, freshly generated fixture",
+  "cue_count": 2185,
+  "wav_bytes": 192813140,
+  "command": "cargo test --release --offline benchmark_preview_components -- --ignored --nocapture --test-threads=1",
+  "rows": [
+    {"round": 0, "status_ms": 584.6907, "clips_ms": 564.451, "vec_ms": 27.8182, "indexed_ms": 0.5007},
+    {"round": 1, "status_ms": 527.5072, "clips_ms": 450.8259, "vec_ms": 23.8845, "indexed_ms": 0.3745},
+    {"round": 2, "status_ms": 485.5813, "clips_ms": 535.4695, "vec_ms": 17.6916, "indexed_ms": 0.2662}
+  ]
+}

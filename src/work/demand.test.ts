@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { regionQueue, splitText } from "./demand.ts";
+import { playbackInterrupted, regionQueue, splitText } from "./demand.ts";
 
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done; }); return { promise, resolve }; }
 const flush = () => new Promise<void>(done => setImmediate(done));
@@ -48,4 +48,35 @@ test("text splitting never loses words", () => {
   const [a, b] = splitText("one two three four", 0.5);
   assert.equal(`${a} ${b}`, "one two three four"); assert.ok(a); assert.ok(b);
   assert.deepEqual(splitText("single", 0.5), ["single", ""]);
+});
+
+test("a play interrupted by pause is expected but playback permission and decode failures are not", () => {
+  assert.equal(playbackInterrupted(new DOMException("interrupted by pause", "AbortError")), true);
+  assert.equal(playbackInterrupted(new DOMException("permission denied", "NotAllowedError")), false);
+  assert.equal(playbackInterrupted(new DOMException("decode failed", "NotSupportedError")), false);
+  assert.equal(playbackInterrupted(new Error("media failed")), false);
+  assert.equal(playbackInterrupted(null), false);
+});
+
+test("an obsolete region failure cannot stop a newer seek", async () => {
+  const first = deferred<void>(); const failures: unknown[] = [], values: number[] = []; let runs = 0;
+  const queue = regionQueue({ publish: async () => {}, run: async () => {
+    if (++runs === 1) { await first.promise; throw Error("Vùng yêu cầu đã đổi."); } return 2;
+  }, accept: value => values.push(value), fail: error => failures.push(error), busy() {}, cancel: async () => {} }, "q");
+  queue.request({ root: "video", start: 0, end: 30, listen: false }); await flush();
+  queue.request({ root: "video", start: 50, end: 80, listen: true });
+  first.resolve(); await queue.idle();
+  assert.deepEqual(failures, []); assert.deepEqual(values, [2]);
+});
+
+test("pause suppresses a late failure but current failures remain visible", async () => {
+  const first = deferred<void>(); const failures: unknown[] = []; let runs = 0;
+  const queue = regionQueue({ publish: async () => {}, run: async () => {
+    if (++runs === 1) await first.promise; throw Error("failure");
+  }, accept() {}, fail: error => failures.push(error), busy() {}, cancel: async () => {} }, "q");
+  queue.request({ root: "video", start: 0, end: 30, listen: true }); await flush();
+  await queue.pause(); first.resolve(); await queue.idle();
+  assert.equal(failures.length, 0);
+  queue.request({ root: "video", start: 50, end: 80, listen: true }); await queue.idle();
+  assert.equal(failures.length, 1);
 });

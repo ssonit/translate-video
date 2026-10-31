@@ -615,6 +615,29 @@ fn complete_pcm(bytes: &[u8]) -> Option<crate::wav::Pcm> {
     (pcm.rate > 0 && !pcm.samples.is_empty()).then_some(pcm)
 }
 
+#[cfg(test)]
+pub(crate) fn benchmark_speech(job: &Job, words: &[TranslatedLine]) {
+    let mut manifest = load(&job.root).unwrap().unwrap();
+    observe(&job.root, &mut manifest).unwrap();
+    for (index, cue) in manifest.cues.iter().enumerate() {
+        assert_eq!(cue.translation, words[index].translation);
+        let pcm = crate::wav::Pcm {
+            rate: 22050,
+            samples: vec![1; 44100],
+        };
+        crate::wav::write_wav(&job.line_wav(index + 1), &pcm).unwrap();
+        manifest.speech.insert(
+            cue.id.clone(),
+            Receipt {
+                key: cue.speech_key.clone(),
+                slot: cue.slot,
+                sha256: digest(&crate::wav::encode_wav(&pcm)),
+            },
+        );
+    }
+    save(&job.root, &manifest).unwrap();
+}
+
 pub(crate) fn record_existing(ticket: &SpeechTicket, path: &Path) -> Result<bool, String> {
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
@@ -636,6 +659,8 @@ pub(crate) struct Status {
     pub speech_stale: Vec<String>,
     pub unverified_wavs: Vec<String>,
     pub ready_regions: Vec<[f64; 2]>,
+    #[serde(skip)]
+    pub speech_seconds: BTreeMap<String, f64>,
 }
 
 pub(crate) fn status(root: &Path) -> Result<Option<Status>, String> {
@@ -649,6 +674,7 @@ pub(crate) fn status(root: &Path) -> Result<Option<Status>, String> {
     let mut stale = Vec::new();
     let mut unverified = Vec::new();
     let mut intervals = Vec::new();
+    let mut speech_seconds = BTreeMap::new();
     for cue in &manifest.cues {
         if !cue.translation.trim().is_empty()
             && !manifest
@@ -664,7 +690,18 @@ pub(crate) fn status(root: &Path) -> Result<Option<Status>, String> {
                 r.key == cue.speech_key
                     && r.slot == cue.slot
                     && std::fs::read(&path).ok().is_some_and(|bytes| {
-                        digest(&bytes) == r.sha256 && complete_pcm(&bytes).is_some()
+                        if digest(&bytes) != r.sha256 {
+                            return false;
+                        }
+                        if let Some(pcm) = complete_pcm(&bytes) {
+                            speech_seconds.insert(
+                                cue.id.clone(),
+                                pcm.samples.len() as f64 / f64::from(pcm.rate),
+                            );
+                            true
+                        } else {
+                            false
+                        }
                     })
             });
         if valid {
@@ -689,6 +726,7 @@ pub(crate) fn status(root: &Path) -> Result<Option<Status>, String> {
         speech_stale: stale,
         unverified_wavs: unverified,
         ready_regions: regions,
+        speech_seconds,
     }))
 }
 

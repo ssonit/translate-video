@@ -51,7 +51,7 @@ export function regionQueue<T>(ports: {
           if (!disposed && mine === epoch && desired?.root === next.intent.root) ports.accept(result);
         } catch (error) {
           running = null;
-          if (!disposed && mine === epoch) ports.fail(error);
+          if (!disposed && mine === epoch && desired?.serial === next.intent.serial && desired.playing) ports.fail(error);
         }
       }
     })().finally(() => {
@@ -86,6 +86,10 @@ export function regionQueue<T>(ports: {
 }
 
 export const LOOK_AHEAD_SECONDS = 30;
+
+export function playbackInterrupted(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
+}
 
 export function missingRegion(view: DraftView, start: number, listen: boolean): boolean {
   const end = Math.min(view.duration, start + LOOK_AHEAD_SECONDS);

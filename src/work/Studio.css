@@ -153,9 +153,9 @@ input[type=checkbox], input[type=range], input[type=radio] { accent-color: var(-
 .studio-script-panel, .studio-exports-panel { grid-column: 3; grid-row: 3; min-height: 0; min-width: 0; overflow: auto; }
 .studio-script-panel { overflow: hidden; }
 .studio-editor .script-wrap { display: flex; flex-direction: column; height: 100%; min-height: 0; max-height: none; padding: 0; margin: 0; border: 0; }
-.studio-editor .script { flex: 1; min-height: 0; padding: 0 12px; }
-.studio-editor .script-line { padding: 10px 0; }
-.studio-editor .script-play { padding: 10px 0; }
+.studio-editor .script { flex: 1; min-height: 0; padding: 16px; }
+.studio-editor .script-line { padding: 12px 4px; column-gap: 8px; }
+.studio-editor .script-play { padding: 12px 16px; gap: 12px; }
 .studio-editor .script-play time { font-size: .78rem; color: var(--muted); }
 .studio-editor .script-play strong { font-size: .9rem; line-height: 1.75; }
 .studio-editor .script-play small { font-size: .79rem; line-height: 1.6; }
