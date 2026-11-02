@@ -396,7 +396,20 @@ pub(crate) fn download(
 }
 
 const LISTEN_AUDIO_FORMAT: &str = "ba[abr<=80]/139/ba[ext=m4a]/ba";
-const SUB_LANGS: &str = "en-orig,vi-orig,en,vi";
+
+// Phụ đề thay cho lời thoại chỉ khi đúng là tiếng của video. Video nói tiếng khác thì track en và vi của
+// YouTube là bản dịch máy của tiếng gốc: dịch tiếp từ đó là dịch qua tiếng trung gian, nên bỏ qua và để Whisper
+// nghe tiếng gốc. `language` là trường của yt-dlp; trống hoặc "NA" là YouTube không nói, khi đó không đoán,
+// chỉ tin track ghi "(Original)". Bản gốc đứng trước bản thường.
+fn caption_tracks(language: &str) -> Vec<&'static str> {
+    let language = language.trim().to_ascii_lowercase();
+    match language.split(['-', '_']).next().unwrap_or("") {
+        "en" => vec!["en-orig", "en"],
+        "vi" => vec!["vi-orig", "vi"],
+        "" | "na" => vec!["en-orig", "vi-orig"],
+        _ => Vec::new(),
+    }
+}
 
 pub(crate) fn prepare_source(app: &AppHandle, raw: &str, output: &Path, audio_only: bool, cancel: &AtomicBool) -> Result<String, String> {
     let url = video_url(raw)?;
@@ -427,7 +440,7 @@ pub(crate) fn prepare_listen(
     }
     stopped(cancel)?;
     download_report(app, "Đang hỏi YouTube về phụ đề.", None);
-    let (title, id) = youtube_title(&url, cancel)?;
+    let (title, id, language) = youtube_title(&url, cancel)?;
     let stem = listen_folder(output_dir, &title, &id, &url);
     let job = Job::open_listen(output_dir, &stem, &url)?;
     crate::note_live_video(app, &job.root);
@@ -439,13 +452,16 @@ pub(crate) fn prepare_listen(
         );
         return Ok(job.root.to_string_lossy().into_owned());
     }
+    let tracks = caption_tracks(&language);
     let captions = job.root.join("captions");
-    match fetch_subs(&url, &captions, cancel) {
-        Err(error) if error == "Đã dừng." => return Err(error),
-        Err(_) => {}
-        Ok(()) => {}
+    if !tracks.is_empty() {
+        match fetch_subs(&url, &captions, &tracks, cancel) {
+            Err(error) if error == "Đã dừng." => return Err(error),
+            Err(_) => {}
+            Ok(()) => {}
+        }
     }
-    if let Some(path) = pick_subtitle(&captions) {
+    if let Some(path) = pick_subtitle(&captions, &tracks) {
         let text = std::fs::read_to_string(&path).unwrap_or_default();
         let ext = path
             .extension()
@@ -462,7 +478,7 @@ pub(crate) fn prepare_listen(
             return Ok(job.root.to_string_lossy().into_owned());
         }
     }
-    download_report(app, "Không có phụ đề. Đang tải tiếng.", None);
+    download_report(app, "Không có phụ đề gốc. Đang tải tiếng.", None);
     require_tool("ffmpeg")?;
     let audio = download_listen_audio(app, &url, &output_dir.join("tai-ve"), &stem, cancel)?;
     set_source_media(&job.root, &audio)?;
@@ -546,7 +562,7 @@ pub(crate) fn link_title(raw: &str) -> Result<String, String> {
     }
     let cancel = AtomicBool::new(false);
     if youtube_host(&host) {
-        let (title, _) = youtube_title(&url, &cancel)?;
+        let (title, _, _) = youtube_title(&url, &cancel)?;
         return one_line_title(&title).ok_or_else(|| "Không đọc được tên video.".to_string());
     }
     if tiktok_host(&host) {
@@ -640,7 +656,7 @@ fn printed_title(url: &str, site: &str, cancel: &AtomicBool) -> Result<String, S
     one_line_title(line).ok_or_else(|| "Không đọc được tên video.".to_string())
 }
 
-fn youtube_title(url: &str, cancel: &AtomicBool) -> Result<(String, String), String> {
+fn youtube_title(url: &str, cancel: &AtomicBool) -> Result<(String, String, String), String> {
     let stdout = run_ytdlp_link("YouTube", |fallback| {
         let mut command = ytdlp()?;
         if fallback {
@@ -652,21 +668,29 @@ fn youtube_title(url: &str, cancel: &AtomicBool) -> Result<(String, String), Str
             "%(title)s",
             "--print",
             "%(id)s",
+            "--print",
+            "%(language)s",
             "--",
             url,
         ]);
         run_tool(command, Duration::from_secs(120), cancel)
     })?;
+    title_fields(&stdout)
+}
+
+// Dòng 1 là tên, dòng 2 là mã, dòng 3 là ngôn ngữ của video. Thiếu dòng ngôn ngữ thì để trống (không biết).
+fn title_fields(stdout: &str) -> Result<(String, String, String), String> {
     let mut lines = stdout
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty());
     let title = lines.next().unwrap_or("").to_string();
     let id = lines.next().unwrap_or("").to_string();
+    let language = lines.next().unwrap_or("").to_string();
     if title.is_empty() || title.eq_ignore_ascii_case("na") {
         return Err("Không đọc được tên video.".into());
     }
-    Ok((title, id))
+    Ok((title, id, language))
 }
 
 // Tên folder việc của Audio: đúng tên yt-dlp đặt cho file video của link này (-o "%(title).120B [%(id)s]").
@@ -731,7 +755,7 @@ fn truncate_bytes(text: &str, max: usize) -> String {
     text[..end].to_string()
 }
 
-fn fetch_subs(url: &str, dir: &Path, cancel: &AtomicBool) -> Result<(), String> {
+fn fetch_subs(url: &str, dir: &Path, tracks: &[&str], cancel: &AtomicBool) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|error| error.to_string())?;
     run_ytdlp_link("YouTube", |fallback| {
         let mut command = ytdlp()?;
@@ -743,7 +767,7 @@ fn fetch_subs(url: &str, dir: &Path, cancel: &AtomicBool) -> Result<(), String> 
             "--write-subs",
             "--write-auto-subs",
             "--sub-langs",
-            SUB_LANGS,
+            &tracks.join(","),
             "--sub-format",
             "json3/srt/vtt",
             "-o",
@@ -767,7 +791,7 @@ fn ytdlp() -> Result<Command, String> {
     Ok(command)
 }
 
-fn pick_subtitle(dir: &Path) -> Option<PathBuf> {
+fn pick_subtitle(dir: &Path, tracks: &[&str]) -> Option<PathBuf> {
     let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
         .ok()?
         .flatten()
@@ -775,21 +799,22 @@ fn pick_subtitle(dir: &Path) -> Option<PathBuf> {
         .filter(|path| {
             path.file_name()
                 .and_then(|name| name.to_str())
-                .and_then(subtitle_rank)
+                .and_then(|name| subtitle_rank(name, tracks))
                 .is_some()
         })
         .collect();
     files.sort_by_key(|path| {
         path.file_name()
             .and_then(|name| name.to_str())
-            .and_then(subtitle_rank)
-            .unwrap_or((9, 9))
+            .and_then(|name| subtitle_rank(name, tracks))
+            .unwrap_or((usize::MAX, u8::MAX))
     });
     files.into_iter().next()
 }
 
-// Bản gốc trước bản thường. Trong cùng loại ngôn ngữ thì json3, rồi srt, rồi vtt.
-fn subtitle_rank(name: &str) -> Option<(u8, u8)> {
+// Track đứng trước trong `tracks` thì tốt hơn; cùng track thì json3, rồi srt, rồi vtt. File không thuộc
+// track nào trong `tracks` (như bản dịch máy còn sót từ lần chạy trước) không được chọn.
+fn subtitle_rank(name: &str, tracks: &[&str]) -> Option<(usize, u8)> {
     let lower = name.to_ascii_lowercase();
     let ext_rank = if lower.ends_with(".json3") {
         0
@@ -805,15 +830,7 @@ fn subtitle_rank(name: &str) -> Option<(u8, u8)> {
         .trim_end_matches(".srt")
         .trim_end_matches(".vtt");
     let lang = stem.rsplit_once('.').map(|(_, lang)| lang).unwrap_or("");
-    let lang_rank = if lang.ends_with("-orig") {
-        0
-    } else if lang == "en" || lang == "vi" {
-        1
-    } else if lang.is_empty() {
-        return None;
-    } else {
-        2
-    };
+    let lang_rank = tracks.iter().position(|track| *track == lang)?;
     Some((lang_rank, ext_rank))
 }
 
@@ -950,6 +967,11 @@ fn collapse_rolling(cues: Vec<Cue>) -> Vec<Cue> {
     out
 }
 
+// Tên nằm trong mẫu -o, mà yt-dlp hiểu "%(id)s" và "%%" trong mẫu. "%%" là dấu % thật.
+fn listen_output_template(stem: &str) -> String {
+    format!("{}.%(ext)s", stem.replace('%', "%%"))
+}
+
 fn download_listen_audio(
     app: &AppHandle,
     url: &str,
@@ -979,7 +1001,7 @@ fn download_listen_audio(
             "after_move:filepath",
             "-o",
         ]);
-        command.arg(format!("{stem}.%(ext)s"));
+        command.arg(listen_output_template(stem));
         command.arg("-P").arg(dir);
         command.arg("--").arg(url);
         let mut lines = LineSplitter::default();
@@ -1694,22 +1716,128 @@ mod tests {
 
     #[test]
     fn subtitle_rank_prefers_original_json3() {
+        let english = ["en-orig", "en"];
         let names = [
             "Talk [abc].en.srt",
             "Talk [abc].en-orig.vtt",
-            "Talk [abc].vi.srt",
+            "Talk [abc].en.json3",
             "Talk [abc].en-orig.json3",
         ];
         let best = names
             .iter()
             .copied()
-            .min_by_key(|name| subtitle_rank(name).unwrap())
+            .min_by_key(|name| subtitle_rank(name, &english).unwrap())
             .unwrap();
         assert_eq!(best, "Talk [abc].en-orig.json3");
+        let vietnamese = ["vi-orig", "vi"];
         assert!(
-            subtitle_rank("Talk [abc].vi-orig.srt").unwrap()
-                < subtitle_rank("Talk [abc].vi.srt").unwrap()
+            subtitle_rank("Talk [abc].vi-orig.srt", &vietnamese).unwrap()
+                < subtitle_rank("Talk [abc].vi.srt", &vietnamese).unwrap()
         );
+    }
+
+    // Phụ đề thay lời thoại chỉ khi là tiếng của chính video. Video nói tiếng khác thì track en và vi
+    // của YouTube là bản dịch máy của tiếng gốc: dịch tiếp từ đó là dịch qua tiếng trung gian.
+    #[test]
+    fn captions_are_taken_only_in_the_language_the_video_is_spoken_in() {
+        assert_eq!(caption_tracks("en"), ["en-orig", "en"]);
+        assert_eq!(caption_tracks("en-US"), ["en-orig", "en"]);
+        assert_eq!(caption_tracks(" EN_gb "), ["en-orig", "en"]);
+        assert_eq!(caption_tracks("vi"), ["vi-orig", "vi"]);
+        for other in ["ja", "ko", "es", "fr", "zh", "zh-Hans", "mul"] {
+            assert!(caption_tracks(other).is_empty(), "{other}");
+        }
+    }
+
+    // YouTube không nói ngôn ngữ (yt-dlp in "NA") thì không đoán: chỉ track ghi "(Original)" mới chắc là tiếng gốc.
+    #[test]
+    fn a_video_whose_language_is_unknown_trusts_only_tracks_marked_original() {
+        for unknown in ["", " ", "NA", "na"] {
+            assert_eq!(caption_tracks(unknown), ["en-orig", "vi-orig"], "{unknown:?}");
+        }
+    }
+
+    fn caption_files(name: &str, files: &[&str]) -> PathBuf {
+        let dir = scratch_dir(name).join("captions");
+        std::fs::create_dir_all(&dir).unwrap();
+        for file in files {
+            std::fs::write(dir.join(file), b"{}").unwrap();
+        }
+        dir
+    }
+
+    fn picked(dir: &Path, language: &str) -> Option<String> {
+        pick_subtitle(dir, &caption_tracks(language))
+            .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+    }
+
+    // Video tiếng Nhật: bản dịch en, vi còn sót từ lần chạy trước cũng không được chọn.
+    #[test]
+    fn a_machine_translated_track_is_not_picked_for_a_video_in_another_language() {
+        let dir = caption_files(
+            "captions-other-language",
+            &["Clip [abc].en.json3", "Clip [abc].vi.srt", "Clip [abc].en-orig.json3"],
+        );
+        assert_eq!(picked(&dir, "ja"), None);
+        let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+    }
+
+    // Video tiếng Anh: bản vi là dịch máy, bỏ, dù json3 đứng trước srt.
+    #[test]
+    fn an_english_video_never_picks_the_vietnamese_translation() {
+        let dir = caption_files("captions-english", &["Talk [abc].vi.json3", "Talk [abc].en.srt"]);
+        assert_eq!(picked(&dir, "en-US").as_deref(), Some("Talk [abc].en.srt"));
+        std::fs::write(dir.join("Talk [abc].en-orig.vtt"), b"{}").unwrap();
+        assert_eq!(picked(&dir, "en-US").as_deref(), Some("Talk [abc].en-orig.vtt"));
+        let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+    }
+
+    // Video tiếng Việt (tSe01jpxlRE có vi-orig, vi và các bản dịch en, zh, ja): bản gốc trước, rồi bản cùng tiếng.
+    #[test]
+    fn a_vietnamese_video_picks_its_own_language_and_never_a_translation() {
+        let name = |track: &str| format!("Tập 2 [tSe01jpxlRE].{track}");
+        let dir = caption_files(
+            "captions-vietnamese",
+            &[
+                &name("en.json3"),
+                &name("zh-Hans.json3"),
+                &name("vi.json3"),
+                &name("vi-orig.vtt"),
+            ],
+        );
+        assert_eq!(picked(&dir, "vi"), Some(name("vi-orig.vtt")));
+        std::fs::remove_file(dir.join(name("vi-orig.vtt"))).unwrap();
+        assert_eq!(picked(&dir, "vi"), Some(name("vi.json3")));
+        std::fs::remove_file(dir.join(name("vi.json3"))).unwrap();
+        assert_eq!(picked(&dir, "vi"), None);
+        let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+    }
+
+    #[test]
+    fn with_no_known_language_only_an_original_track_is_picked() {
+        let dir = caption_files(
+            "captions-unknown-language",
+            &["Clip [abc].en.json3", "Clip [abc].vi.srt"],
+        );
+        assert_eq!(picked(&dir, "NA"), None);
+        std::fs::write(dir.join("Clip [abc].en-orig.srt"), b"{}").unwrap();
+        assert_eq!(picked(&dir, "NA").as_deref(), Some("Clip [abc].en-orig.srt"));
+        let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+    }
+
+    #[test]
+    fn the_title_lookup_also_reports_the_language_the_video_is_spoken_in() {
+        assert_eq!(
+            title_fields("Clip\nabc\nja\n").unwrap(),
+            ("Clip".into(), "abc".into(), "ja".into())
+        );
+        assert_eq!(title_fields("Clip\nabc\nNA\n").unwrap().2, "NA");
+        // Bản yt-dlp không in dòng ngôn ngữ: coi như không biết, vẫn có tên và mã.
+        assert_eq!(
+            title_fields("Clip\nabc\n").unwrap(),
+            ("Clip".into(), "abc".into(), String::new())
+        );
+        assert!(title_fields("NA\nabc\nen\n").is_err());
     }
 
     #[test]
@@ -1765,6 +1893,16 @@ mod tests {
             "Grok Bot Just Got 2 Massive Upgrades. Do These Things Now. [MgvwZaDPCs4]"
         );
         assert_eq!(listen_stem("Build $200/day Bot", "abc"), "Build $200\u{29f8}day Bot [abc]");
+    }
+
+    // Tên đi thẳng vào mẫu -o của yt-dlp, mà yt-dlp hiểu lại "%(id)s" và "%%" trong đó. Hỏi yt-dlp thật (offline):
+    // "Use %(id)s now" ra "Use abcdefghijk now", "Sale 50%% off" ra "Sale 50% off". Đổi % thành %% thì tên giữ nguyên.
+    #[test]
+    fn listen_template_keeps_percent_signs_in_the_name_literal() {
+        assert_eq!(listen_output_template("Plain [abc]"), "Plain [abc].%(ext)s");
+        assert_eq!(listen_output_template("100% Free [abc]"), "100%% Free [abc].%(ext)s");
+        assert_eq!(listen_output_template("Use %(id)s now [abc]"), "Use %%(id)s now [abc].%(ext)s");
+        assert_eq!(listen_output_template("Sale 50%% off [abc]"), "Sale 50%%%% off [abc].%(ext)s");
     }
 
     // Tên file yt-dlp 2026.08.19 đặt thật cho các tiêu đề này (`-o "%(title).120B [%(id)s].%(ext)s"`, id abcdefghijk),

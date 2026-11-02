@@ -135,6 +135,11 @@ export function maskHintShown(options: { audioOnly: boolean; textOnly: boolean; 
   return !options.audioOnly && options.burnCaptions;
 }
 
+// Video xem thử bố cục. Việc đang chọn nguồn thắng video tự chọn trong trang. Trang ẩn thì không giữ video nào.
+export function previewPath(source: string, picked: string, active: boolean) {
+  return active ? source || picked : "";
+}
+
 export function fileName(path: string) {
   const parts = path.split(/[/\\]/);
   return parts[parts.length - 1] || path;

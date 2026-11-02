@@ -10,10 +10,19 @@ use std::time::{Duration, Instant};
 
 use crate::ollama::{deepseek_local_up_fast, DEEPSEEK_LOCAL_HEALTH_URL};
 
+// The first start after boot has taken about two minutes (Python loading Playwright and the
+// rest of the venv). Cutting it at 20 s killed the process, so the button could never succeed.
+const START_LIMIT: Duration = Duration::from_secs(180);
+// A process of ours that is alive but not answering: give it a moment, then report.
+const RESTART_LIMIT: Duration = Duration::from_secs(20);
+const POLL: Duration = Duration::from_millis(200);
+
 pub struct Control {
     gate: Mutex<()>,
     child: Mutex<Option<Child>>,
     owned: AtomicBool,
+    // Set by stop and by closing the app, so a start that is still waiting lets go of `gate`.
+    abort: AtomicBool,
     output: Arc<OutputTap>,
 }
 
@@ -28,6 +37,7 @@ impl Default for Control {
             gate: Mutex::new(()),
             child: Mutex::new(None),
             owned: AtomicBool::new(false),
+            abort: AtomicBool::new(false),
             output: Arc::new(OutputTap {
                 text: Mutex::new(String::new()),
                 readers: AtomicUsize::new(0),
@@ -66,11 +76,11 @@ pub fn start(control: &Control) -> Result<(), String> {
     if !python.is_file() {
         return Err(missing_python());
     }
+    if control.abort.load(Ordering::SeqCst) {
+        return Err("Đã dừng.".into());
+    }
     if child_running(control) {
-        if wait_until(deepseek_local_up_fast, Duration::from_secs(20)) {
-            return Ok(());
-        }
-        return Err(startup_failure(control));
+        return finish_start(control, RESTART_LIMIT);
     }
     wait_readers(&control.output);
     *lock(&control.output.text) = String::new();
@@ -96,19 +106,72 @@ pub fn start(control: &Control) -> Result<(), String> {
     if let Some(pipe) = stderr {
         watch_pipe(pipe, Arc::clone(&control.output));
     }
-    if wait_until(deepseek_local_up_fast, Duration::from_secs(20)) {
-        return Ok(());
+    finish_start(control, START_LIMIT)
+}
+
+fn finish_start(control: &Control, limit: Duration) -> Result<(), String> {
+    match wait_for_server(
+        deepseek_local_up_fast,
+        || child_running(control),
+        &control.abort,
+        limit,
+        POLL,
+    ) {
+        Wait::Ready => Ok(()),
+        Wait::Stopped => Err("Đã dừng.".into()),
+        Wait::Exited | Wait::TimedOut => Err(startup_failure(control)),
     }
-    Err(startup_failure(control))
+}
+
+#[derive(Debug, PartialEq)]
+enum Wait {
+    Ready,
+    // The process ended before the server answered, so waiting longer cannot help.
+    Exited,
+    TimedOut,
+    Stopped,
+}
+
+fn wait_for_server(
+    mut ready: impl FnMut() -> bool,
+    mut alive: impl FnMut() -> bool,
+    stop: &AtomicBool,
+    limit: Duration,
+    step: Duration,
+) -> Wait {
+    let started = Instant::now();
+    loop {
+        if ready() {
+            return Wait::Ready;
+        }
+        if stop.load(Ordering::SeqCst) {
+            return Wait::Stopped;
+        }
+        if !alive() {
+            return Wait::Exited;
+        }
+        if started.elapsed() >= limit {
+            return Wait::TimedOut;
+        }
+        thread::sleep(step);
+    }
+}
+
+// A start can hold `gate` for minutes. Raise the flag first so it lets go within a poll.
+fn take_gate_after_aborting(control: &Control) -> std::sync::MutexGuard<'_, ()> {
+    control.abort.store(true, Ordering::SeqCst);
+    lock(&control.gate)
 }
 
 pub fn stop(control: &Control) -> Result<(), String> {
-    let _gate = lock(&control.gate);
+    let _gate = take_gate_after_aborting(control);
     kill_owned(control);
     for pid in listeners_on_8000() {
         kill_pid(pid);
     }
     let _ = wait_until(|| !deepseek_local_up_fast(), Duration::from_secs(5));
+    // Any wait that was running has ended. Let the next start run normally.
+    control.abort.store(false, Ordering::SeqCst);
     if deepseek_local_up_fast() {
         Err("Chưa tắt được server tại cổng 8000.".into())
     } else {
@@ -121,10 +184,11 @@ pub fn stop_owned(control: &Control) {
     if !control.owned.load(Ordering::SeqCst) {
         return;
     }
-    let _gate = lock(&control.gate);
+    let _gate = take_gate_after_aborting(control);
     if control.owned.load(Ordering::SeqCst) {
         kill_owned(control);
     }
+    control.abort.store(false, Ordering::SeqCst);
 }
 
 fn child_running(control: &Control) -> bool {
@@ -346,5 +410,91 @@ OSError: [Errno 10048] port
             startup_message(" \n "),
             format!("Đã mở DeepSeek nhưng chưa thấy {DEEPSEEK_LOCAL_HEALTH_URL}.")
         );
+    }
+
+    const FAST: Duration = Duration::from_millis(1);
+
+    #[test]
+    fn a_slow_cold_start_is_waited_out_not_cut_at_twenty_seconds() {
+        // The first start after boot took about two minutes. Killing it at 20 s meant it
+        // could never come up through the button.
+        assert!(START_LIMIT >= Duration::from_secs(120));
+        let stop = AtomicBool::new(false);
+        let mut polls = 0;
+        let result = wait_for_server(
+            || {
+                polls += 1;
+                polls > 50
+            },
+            || true,
+            &stop,
+            Duration::from_secs(30),
+            FAST,
+        );
+        assert_eq!(result, Wait::Ready);
+    }
+
+    #[test]
+    fn a_server_that_dies_while_starting_fails_at_once_not_after_the_limit() {
+        let stop = AtomicBool::new(false);
+        let begun = Instant::now();
+        let mut checks = 0;
+        let result = wait_for_server(
+            || false,
+            || {
+                checks += 1;
+                checks < 4
+            },
+            &stop,
+            Duration::from_secs(60),
+            FAST,
+        );
+        assert_eq!(result, Wait::Exited);
+        assert!(begun.elapsed() < Duration::from_secs(10));
+    }
+
+    #[test]
+    fn a_server_that_never_answers_gives_up_at_the_limit() {
+        let stop = AtomicBool::new(false);
+        let result = wait_for_server(|| false, || true, &stop, Duration::from_millis(40), FAST);
+        assert_eq!(result, Wait::TimedOut);
+    }
+
+    #[test]
+    fn a_stop_request_ends_the_wait_but_an_answering_server_still_counts() {
+        let stop = AtomicBool::new(true);
+        assert_eq!(
+            wait_for_server(|| false, || true, &stop, Duration::from_secs(60), FAST),
+            Wait::Stopped
+        );
+        assert_eq!(
+            wait_for_server(|| true, || true, &stop, Duration::from_secs(60), FAST),
+            Wait::Ready
+        );
+    }
+
+    #[test]
+    fn stopping_does_not_sit_behind_a_start_that_is_still_waiting() {
+        // Closing the app calls stop_owned. It must not wait out a two-minute start.
+        let control = Control::default();
+        let (entered, started) = std::sync::mpsc::channel();
+        thread::scope(|scope| {
+            scope.spawn(|| {
+                let _gate = lock(&control.gate);
+                entered.send(()).unwrap();
+                let result = wait_for_server(
+                    || false,
+                    || true,
+                    &control.abort,
+                    Duration::from_secs(20),
+                    Duration::from_millis(5),
+                );
+                assert_eq!(result, Wait::Stopped);
+            });
+            started.recv().unwrap();
+            let begun = Instant::now();
+            let _gate = take_gate_after_aborting(&control);
+            assert!(begun.elapsed() < Duration::from_secs(10));
+        });
     }
 }

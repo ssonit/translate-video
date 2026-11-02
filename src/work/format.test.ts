@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { againPlan, draftProgress, freshSteps, mark, markText, maskHintShown, noticeFades, showAsTextOnly, stepStateOf, videoToSave, watchHeading, overallEstimate, workflowPhases } from "./format.ts";
+import { againPlan, draftProgress, freshSteps, mark, markText, maskHintShown, noticeFades, previewPath, showAsTextOnly, stepStateOf, videoToSave, watchHeading, overallEstimate, workflowPhases } from "./format.ts";
 import type { DraftBrief } from "./types.ts";
 
 test("text only skips the voice steps", () => {
@@ -138,4 +138,12 @@ test("the hint about the source's own hard-coded text shows only when captions g
   assert.equal(maskHintShown({ ...base, audioOnly: true, burnCaptions: true }), false); // audio không có hình
   assert.equal(maskHintShown({ ...base, burnCaptions: true, maskOn: true }), false); // đã bật che rồi
   assert.equal(maskHintShown({ ...base, textOnly: true, maskOn: true }), false);
+});
+
+test("the layout preview video is held only while its page is open, and the job's source wins over a picked sample", () => {
+  assert.equal(previewPath("D:/job/a.mp4", "D:/pick/b.mp4", true), "D:/job/a.mp4");
+  assert.equal(previewPath("", "D:/pick/b.mp4", true), "D:/pick/b.mp4"); // việc bằng link: dùng video mẫu người dùng chọn
+  assert.equal(previewPath("", "", true), "");
+  assert.equal(previewPath("D:/job/a.mp4", "D:/pick/b.mp4", false), ""); // trang ẩn: thả cả hai
+  assert.equal(previewPath("", "D:/pick/b.mp4", false), "");
 });

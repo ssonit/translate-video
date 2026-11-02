@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState, type ReactNode, type CSSProperties } from "react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
+import { previewPath } from "./format";
 import { CAPTION_FONTS, DEFAULT_RENDER, type ChannelPreset, type RenderSettings } from "./renderSettings";
 import "./StyleEditor.css";
 
-export function StyleEditor({ value: s, onChange, source, disabled, captions, audioOnly, production, standalone = false, presets, onSave, onApply, onDelete }: {
-  standalone?: boolean; production?: ReactNode; audioOnly: boolean; value: RenderSettings; onChange: (s: RenderSettings) => void; source: string; disabled: boolean; captions: boolean;
+export function StyleEditor({ value: s, onChange, source, active = true, disabled, captions, audioOnly, production, standalone = false, presets, onSave, onApply, onDelete }: {
+  // active=false: trang chứa editor đang ẩn, nên không giữ video xem thử nào (kể cả video tự chọn).
+  active?: boolean; standalone?: boolean; production?: ReactNode; audioOnly: boolean; value: RenderSettings; onChange: (s: RenderSettings) => void; source: string; disabled: boolean; captions: boolean;
   presets: ChannelPreset[]; onSave: (name: string) => void; onApply: (p: ChannelPreset) => void; onDelete: (id: string) => void;
 }) {
   const [file, setFile] = useState("");
@@ -22,7 +24,7 @@ export function StyleEditor({ value: s, onChange, source, disabled, captions, au
   const video = useRef<HTMLVideoElement>(null);
   const backdrop = useRef<HTMLVideoElement>(null);
   const drag = useRef<{ kind: "caption" | "frame" | "mask"; sx: number; sy: number; x: number; y: number; focusX: number; focusY: number } | null>(null);
-  const path = source || file;
+  const path = previewPath(source, file, active);
   useEffect(() => {
     let current = true;
     setSrc(""); setNote("");

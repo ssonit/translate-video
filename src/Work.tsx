@@ -556,8 +556,8 @@ export default function Work({
                 sample: "Xuất thử 8 giây để kiểm tra trước khi làm cả video.",
               }[configTab]}</p>
               <div hidden={configTab !== "visual"}><StyleEditor standalone  audioOnly={s.audioOnly} value={s.render} onChange={job.chooseRender}
-                // Trang cấu hình ẩn thì thả video xem thử, kẻo giữ nguyên một video đã tải của việc khác.
-                source={s.view === "configure" && configTab === "visual" && s.mode === "file" ? s.composeVideo : ""} disabled={s.captioning || s.running || s.presetApplying}
+                // Trang cấu hình ẩn thì thả video xem thử (cả video tự chọn), kẻo giữ nguyên một video đã tải.
+                source={s.mode === "file" ? s.composeVideo : ""} active={s.view === "configure" && !s.nameEdit && configTab === "visual"} disabled={s.captioning || s.running || s.presetApplying}
                 captions={!s.audioOnly && (s.textOnly || s.burnCaptions)} presets={s.presets} onSave={job.savePreset}
                 onApply={(p) => void job.applyPreset(p).then(onChanged)} onDelete={job.deletePreset} /></div>
               <ProductionOptions section={configTab} value={s.render} onChange={job.chooseRender} lang={s.target} voice={s.voice}

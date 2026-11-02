@@ -66,3 +66,9 @@ export function serverLine(up: boolean, going: "" | "start" | "stop"): string {
   if (going === "stop") return "Đang tắt server…";
   return up ? "Server đang chạy" : "Server chưa chạy";
 }
+
+// Chú thích dưới dòng trạng thái. Lần bật đầu sau khi mở máy từng mất khoảng hai phút, nói trước để không ai tưởng app treo.
+export function serverNote(going: "" | "start" | "stop"): string {
+  if (going === "start") return "Lần bật đầu có thể mất vài phút. App chờ tới khi server trả lời.";
+  return "Bật thì chạy Deepseek-API tại http://127.0.0.1:8000. Tắt thì dừng process cổng đó. App không tự bật lại.";
+}

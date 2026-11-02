@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { serverLine } from "./setupStatus";
+import { serverLine, serverNote } from "./setupStatus";
 
 // Server Deepseek-API (DeepSeek local). Màn chuẩn bị và ô "Dịch bằng" cùng dùng chỗ này.
 // active: chỉ hỏi server khi đang chọn DeepSeek local. refresh: đổi giá trị thì hỏi lại ngay.
@@ -88,9 +88,7 @@ export function DeepseekServerRow({
       <div className="command install-row">
         <div>
           <strong>{serverLine(server.up, server.going)}</strong>
-          <p>
-            Bật thì chạy Deepseek-API tại http://127.0.0.1:8000. Tắt thì dừng process cổng đó. App không tự bật lại.
-          </p>
+          <p>{serverNote(server.going)}</p>
         </div>
         <button
           type="button"

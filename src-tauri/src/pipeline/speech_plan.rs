@@ -302,4 +302,16 @@ mod tests {
         let kept: String = pieces.iter().map(|part| part.as_str()).collect();
         assert_eq!(kept, text);
     }
+
+    #[test]
+    fn a_long_phrase_with_nowhere_to_break_stays_whole_however_long_the_clock_runs() {
+        // Long enough that the character cap alone allows two parts, so only the
+        // "nothing to break on" check keeps it in one piece.
+        let bare = "这是一个没有任何标点的很长的中文短语啊";
+        assert!(bare.chars().count() / MIN_CHARS_PER_TIME_PART >= 2);
+        assert_eq!(parts(&cue(0.0, 30.0, bare)), vec![bare]);
+        // A mark that only closes the phrase is not a place to cut it in two.
+        let closed = format!("{bare}。");
+        assert_eq!(parts(&cue(0.0, 30.0, &closed)), vec![closed.as_str()]);
+    }
 }

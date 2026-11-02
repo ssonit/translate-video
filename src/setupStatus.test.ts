@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { chipLabel, firstGap, lockNote, markFor, serverLine, summarize, type ToolStatus } from "./setupStatus.ts";
+import { chipLabel, firstGap, lockNote, markFor, serverLine, serverNote, summarize, type ToolStatus } from "./setupStatus.ts";
 
 const ok = (id: ToolStatus["id"]): ToolStatus => ({ id, ready: true, detail: "" });
 const gap = (id: ToolStatus["id"]): ToolStatus => ({ id, ready: false, detail: "" });
@@ -81,4 +81,11 @@ test("the DeepSeek server line follows the click instead of the old state", () =
   assert.equal(serverLine(true, ""), "Server đang chạy");
   assert.equal(serverLine(false, "start"), "Đang bật server…");
   assert.equal(serverLine(true, "stop"), "Đang tắt server…");
+});
+
+test("the DeepSeek note says a first start can take minutes, then goes back to the usual text", () => {
+  assert.match(serverNote("start"), /vài phút/);
+  assert.doesNotMatch(serverNote(""), /vài phút/);
+  assert.equal(serverNote("stop"), serverNote(""));
+  assert.match(serverNote(""), /127\.0\.0\.1:8000/);
 });
