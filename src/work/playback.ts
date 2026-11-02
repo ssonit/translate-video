@@ -15,6 +15,7 @@ import {
   openJobFolder,
   plainVideo,
   sameFile,
+  stepStateOf,
   videoToSave,
 } from "./format";
 import type { Session } from "./state";
@@ -36,7 +37,7 @@ export function playbackActions(s: Session) {
         return {
           ...step,
           label: saved.label || step.label,
-          state: saved.state,
+          state: stepStateOf(saved.state, saved.detail),
           detail: saved.detail,
           progress: saved.progress,
           startedAt: saved.state === "running" ? stamp : null,

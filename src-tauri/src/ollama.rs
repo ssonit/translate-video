@@ -1296,6 +1296,18 @@ fn shorten(parts: &[String]) -> Vec<String> {
         .collect()
 }
 
+/// A space or punctuation mark before the last character. A mark that only
+/// closes the phrase is not a place to cut it in two.
+pub(crate) fn has_interior_break(text: &str) -> bool {
+    let chars: Vec<char> = text.chars().collect();
+    let Some(last) = chars.len().checked_sub(1) else {
+        return false;
+    };
+    chars[..last]
+        .iter()
+        .any(|ch| ch.is_whitespace() || BREAK_MARKS.contains(ch))
+}
+
 pub(crate) fn mechanical_split(sentence: &str, num_parts: usize) -> Vec<String> {
     let mut rest = sentence.trim().to_string();
     if rest.is_empty() || num_parts <= 1 {

@@ -10,8 +10,8 @@ use serde_json::Value;
 use tauri::AppHandle;
 
 use crate::job::{
-    file_ready, is_extra_video, is_listen_audio, is_partial_audio, read_json, write_json, Cue, Job,
-    TranslatedLine,
+    file_ready, is_extra_video, is_listen_audio, is_partial_audio, read_json, write_json,
+    write_json_if_changed, Cue, Job, TranslatedLine,
 };
 use crate::ollama::divide_time;
 
@@ -105,6 +105,7 @@ pub(super) fn release_mix(dir: &Path) {
 }
 
 // Dọn folder kết quả đang nằm im: wav tách tiếng, wav co từng câu, và bản trộn.
+// Không ghi lại file đã gọn, kẻo giờ sửa của việc nằm im đổi theo mỗi lần mở Thư viện.
 pub(crate) fn reclaim_output(output_dir: &Path) {
     let Ok(entries) = std::fs::read_dir(output_dir) else {
         return;
@@ -123,7 +124,7 @@ pub(crate) fn reclaim_output(output_dir: &Path) {
         let transcript = dir.join("transcript.json");
         if let Ok(cues) = read_cues(&transcript) {
             if !cues.is_empty() {
-                let _ = write_json(&transcript, &cues);
+                let _ = write_json_if_changed(&transcript, &cues);
                 let _ = std::fs::remove_file(dir.join("audio.wav"));
             }
         }
@@ -1013,6 +1014,94 @@ mod tests {
             b"keep"
         );
         assert!(captions.join("dub.wav").is_file());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Mở Thư viện chỉ được dọn file thừa. Folder đã gọn mà bị ghi lại thì giờ "đang dở" thành giờ mở.
+    #[test]
+    fn reclaim_leaves_a_settled_job_as_it_was() {
+        let dir = std::env::temp_dir().join(format!("reclaim-settled-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let out = dir.join("out");
+        let source = out.join("tai-ve").join("tap.mp4");
+        std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+        std::fs::write(&source, b"video").unwrap();
+        let job = Job::open(&source, &out).unwrap();
+        let settings = crate::pipeline::RunSettings {
+            target: "vi".into(),
+            voice: "fixture".into(),
+            use_terms: false,
+            skip_translate: false,
+            text_only: true,
+        };
+        write_json(&job.settings_path(), &settings).unwrap();
+        let cancel = AtomicBool::new(false);
+        let origin = crate::draft::inspect_source(&job, &cancel).unwrap();
+        let context = crate::draft::RunContext {
+            provider: "test-provider".into(),
+            model: "test-model".into(),
+            audio_only: false,
+        };
+        crate::draft::begin_text(&job, origin, context, &cancel).unwrap();
+        let cues = vec![Cue {
+            start: 0.0,
+            end: 1.0,
+            text: "Xin chào".into(),
+        }];
+        write_json(&job.transcript(), &cues).unwrap();
+        std::fs::write(job.audio(), vec![0u8; 64]).unwrap();
+        // Lùi giờ sửa mọi file về hai ngày trước: file nào mang giờ mới là do reclaim_output ghi.
+        let past = std::time::SystemTime::now() - Duration::from_secs(2 * 24 * 3600);
+        for entry in std::fs::read_dir(&job.root).unwrap().flatten() {
+            if entry.path().is_file() {
+                let file = std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(entry.path())
+                    .unwrap();
+                file.set_modified(past).unwrap();
+            }
+        }
+        let stamps = |root: &Path| {
+            let mut found = Vec::new();
+            for entry in std::fs::read_dir(root).unwrap().flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if entry.path().is_file() && name != "audio.wav" {
+                    found.push((name, entry.metadata().unwrap().modified().unwrap()));
+                }
+            }
+            found.sort();
+            found
+        };
+        let before = stamps(&job.root);
+        assert!(before.iter().any(|(name, _)| name == "draft.json"));
+        assert!(before.iter().any(|(name, _)| name == "transcript.json"));
+        reclaim_output(&out);
+        assert!(!job.audio().exists());
+        assert_eq!(stamps(&job.root), before);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reclaim_still_gathers_a_raw_transcript_into_cues() {
+        let dir = std::env::temp_dir().join(format!("reclaim-raw-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let out = dir.join("out");
+        let job = out.join("tap");
+        std::fs::create_dir_all(&job).unwrap();
+        std::fs::write(
+            job.join("transcript.json"),
+            r#"{"segments":[{"start":0.0,"end":1.0,"text":" Xin chào "}]}"#,
+        )
+        .unwrap();
+        std::fs::write(job.join("audio.wav"), vec![0u8; 64]).unwrap();
+        reclaim_output(&out);
+        let saved: Value =
+            serde_json::from_slice(&std::fs::read(job.join("transcript.json")).unwrap()).unwrap();
+        assert_eq!(
+            saved,
+            serde_json::json!([{"start": 0.0, "end": 1.0, "text": "Xin chào"}])
+        );
+        assert!(!job.join("audio.wav").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

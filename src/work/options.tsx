@@ -1,4 +1,5 @@
 import { useId } from "react";
+import { maskHintShown } from "./format";
 
 export function RunOptions({
   audioOnly,
@@ -8,6 +9,8 @@ export function RunOptions({
   onAudioOnly,
   onTextOnly,
   onBurn,
+  maskOn,
+  onMask,
 }: {
   audioOnly: boolean;
   textOnly: boolean;
@@ -16,9 +19,13 @@ export function RunOptions({
   onAudioOnly: (checked: boolean) => void;
   onTextOnly: (checked: boolean) => void;
   onBurn: (checked: boolean) => void;
+  // Chỉ màn việc mới truyền hai mục này. Không truyền thì không có gợi ý về chữ cứng.
+  maskOn?: boolean;
+  onMask?: () => void;
 }) {
   const group = useId();
   const mode = textOnly ? "captions" : audioOnly ? "audio" : "video";
+  const maskHint = onMask !== undefined && maskHintShown({ audioOnly, textOnly, burnCaptions, maskOn: maskOn === true });
   return (
     <div className="output-options">
       <fieldset className="output-choices" disabled={disabled}>
@@ -45,6 +52,12 @@ export function RunOptions({
             Kèm phụ đề trên video
           </label>
         </div>
+      ) : null}
+      {maskHint ? (
+        <p className="key-note">
+          Video gốc có chữ cứng? Phụ đề mới sẽ đè lên chữ cũ.{" "}
+          <button type="button" className="link" onClick={onMask}>Che / làm mờ chữ nguồn</button>
+        </p>
       ) : null}
     </div>
   );

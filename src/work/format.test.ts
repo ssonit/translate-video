@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { againPlan, draftProgress, freshSteps, showAsTextOnly, videoToSave, watchHeading, overallEstimate, workflowPhases } from "./format.ts";
+import { againPlan, draftProgress, freshSteps, mark, markText, maskHintShown, noticeFades, showAsTextOnly, stepStateOf, videoToSave, watchHeading, overallEstimate, workflowPhases } from "./format.ts";
 import type { DraftBrief } from "./types.ts";
 
 test("text only skips the voice steps", () => {
@@ -25,6 +25,31 @@ test("waiting for names freezes processing time and hides ETA until resumed", ()
   assert.equal(resumed.elapsed, 24);
   assert.ok(resumed.remaining! > 0);
   assert.equal(overallEstimate(steps, null, 100000, paused).elapsed, 0);
+});
+
+test("no time is promised while the running step has not measured any progress", () => {
+  const stage = (progress: number | null) => freshSteps().map((step) => ({
+    ...step,
+    state: step.id === "extract" ? "done" : step.id === "transcribe" ? "running" : "pending",
+    progress: step.id === "transcribe" ? progress : null,
+  }));
+  // Three finished seconds say nothing about the long step after them. Extrapolating from them
+  // made the estimate grow with every second the step ran.
+  assert.equal(overallEstimate(stage(null), 0, 6000).remaining, null);
+  assert.equal(overallEstimate(stage(null), 0, 12000).remaining, null);
+  assert.equal(overallEstimate(stage(0.01), 0, 12000).remaining, null);
+  assert.ok(overallEstimate(stage(0.2), 0, 12000).remaining! > 0);
+});
+
+test("a step stopped by the user reads as stopped, not as an error", () => {
+  assert.equal(stepStateOf("error", "Đã dừng."), "stopped");
+  assert.equal(stepStateOf("error", "Không ghép được video."), "error");
+  assert.equal(stepStateOf("running", "Đã dừng."), "running");
+  assert.equal(markText("stopped"), "Đã dừng");
+  assert.notEqual(mark("stopped"), mark("error"));
+  const stoppedAtMerge = freshSteps().map((step) => ({ ...step, state: step.id === "merge" ? "stopped" : "done" }));
+  assert.equal(workflowPhases(stoppedAtMerge)[3].state, "stopped");
+  assert.equal(workflowPhases(stoppedAtMerge)[2].state, "done");
 });
 
 test("four phases retain pending work, errors and the explicit name wait", () => {
@@ -95,4 +120,22 @@ test("an unfinished job says which stage it stopped at", () => {
   for (const [change, want] of cases) {
     assert.equal(draftProgress({ ...none, ...change }), want);
   }
+});
+
+test("a finished-job notice fades by itself, a failure waits to be read", () => {
+  assert.equal(noticeFades("Đã xử lý xong a.mp4.", false, ""), true);
+  assert.equal(noticeFades("Đã dừng xử lý.", false, "Đã dừng."), true);
+  assert.equal(noticeFades("Xử lý bị gián đoạn.", false, "Nguồn hỏng"), false);
+  assert.equal(noticeFades("Đã bắt đầu a.mp4.", true, ""), false);
+  assert.equal(noticeFades("", false, ""), false);
+});
+
+test("the hint about the source's own hard-coded text shows only when captions go on the picture and the cover is off", () => {
+  const base = { audioOnly: false, textOnly: false, burnCaptions: false, maskOn: false };
+  assert.equal(maskHintShown(base), false); // video lồng tiếng, phụ đề nằm trong file riêng
+  assert.equal(maskHintShown({ ...base, burnCaptions: true }), true); // video lồng tiếng kèm phụ đề trên hình
+  assert.equal(maskHintShown({ ...base, textOnly: true }), true); // Video phụ đề luôn ghi chữ lên hình
+  assert.equal(maskHintShown({ ...base, audioOnly: true, burnCaptions: true }), false); // audio không có hình
+  assert.equal(maskHintShown({ ...base, burnCaptions: true, maskOn: true }), false); // đã bật che rồi
+  assert.equal(maskHintShown({ ...base, textOnly: true, maskOn: true }), false);
 });

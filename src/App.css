@@ -510,6 +510,11 @@ select:disabled {
   word-break: break-all;
 }
 
+/* Lý do link sai nằm trong thẻ .path, nên phải thắng màu xám của .path p. */
+.path p.error {
+  color: var(--bad);
+}
+
 .steps {
   list-style: none;
   margin: 12px 0 0;

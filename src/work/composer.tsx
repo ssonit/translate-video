@@ -16,6 +16,7 @@ export function Composer({
   onMode,
   composeVideo,
   composeLink,
+  linkError,
   onLink,
   onPickVideo,
   audioOnly,
@@ -26,6 +27,8 @@ export function Composer({
   onSkip,
   burnCaptions,
   onBurn,
+  maskOn,
+  onMask,
   captioning,
   running,
   folder,
@@ -71,6 +74,8 @@ export function Composer({
   onMode: (mode: "file" | "link") => void;
   composeVideo: string;
   composeLink: string;
+  // Lý do link đang dán không dùng được. Trống là dùng được hoặc chưa kiểm tra.
+  linkError: string;
   onLink: (value: string) => void;
   onPickVideo: () => void;
   audioOnly: boolean;
@@ -81,6 +86,9 @@ export function Composer({
   onSkip: (on: boolean) => void;
   burnCaptions: boolean;
   onBurn: (on: boolean) => void;
+  // Vùng che chữ gốc đã bật chưa, và nút mở trang cấu hình ngay chỗ đó.
+  maskOn: boolean;
+  onMask: () => void;
   captioning: boolean;
   running: boolean;
   folder: string;
@@ -146,7 +154,9 @@ export function Composer({
   const hasSource =
     mode === "file" ? composeVideo !== "" : composeLink.trim() !== "";
   const needsKey = !skipTranslate && pending !== "";
-  const canOpen = hasSource && folder !== "" && !captioning && !running;
+  // Link sai thì không chạy, không xếp hàng, không mở nháp; lý do hiện ngay dưới ô nhập.
+  const badLink = mode === "link" && linkError !== "";
+  const canOpen = hasSource && !badLink && folder !== "" && !captioning && !running;
   // Thiếu mục bắt buộc thì khóa các nút chạy. Chọn video, đổi dịch vụ, bật server vẫn làm được.
   const locked = lock !== "";
 
@@ -204,6 +214,8 @@ export function Composer({
               value={composeLink}
               placeholder="Dán link hoặc cả đoạn chữ chia sẻ"
               aria-label="Link YouTube, Douyin hoặc TikTok"
+              aria-invalid={badLink}
+              aria-describedby="compose-link-note"
               autoComplete="off"
               spellCheck={false}
               onChange={(event) => onLink(event.target.value)}
@@ -215,11 +227,17 @@ export function Composer({
                 onLink(link);
               }}
             />
-            <p>
-              {audioOnly
-                ? "Chỉ lấy phần tiếng để nghe và xuất audio."
-                : "Dán link một video, hoặc cả đoạn chia sẻ Douyin / TikTok."}
-            </p>
+            {badLink ? (
+              <p id="compose-link-note" className="error" role="alert">
+                {linkError}
+              </p>
+            ) : (
+              <p id="compose-link-note">
+                {audioOnly
+                  ? "Chỉ lấy phần tiếng để nghe và xuất audio."
+                  : "Dán link một video, hoặc cả đoạn chia sẻ Douyin / TikTok."}
+              </p>
+            )}
           </article>
         )}
         <div className="compose-section output-section">
@@ -231,6 +249,8 @@ export function Composer({
             onAudioOnly={onAudioOnly}
             onTextOnly={onTextOnly}
             onBurn={onBurn}
+            maskOn={maskOn}
+            onMask={onMask}
           />
         </div>
         <div className="compose-section">
@@ -523,6 +543,7 @@ export function Composer({
             }
             disabled={
               locked ||
+              badLink ||
               (needsKey && hasSource) ||
               captioning ||
               folder === "" ||

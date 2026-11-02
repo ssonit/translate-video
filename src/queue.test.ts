@@ -87,6 +87,49 @@ test("the video that is running is not queued again as a share text", () => {
   assert.equal(result.skipped, 1);
 });
 
+test("the running video is left out under any of the keys it is known by", () => {
+  // A link job that has finished downloading is also known by the file it downloaded.
+  const keys = [queueKey("link", "https://youtu.be/abc"), queueKey("file", "D:\\tai-ve\\clip [abc].mp4")];
+  const result = appendJobs(
+    [],
+    [job("https://youtu.be/abc", "link"), job("D:\\tai-ve\\clip [abc].mp4"), job("D:\\other.mp4")],
+    keys,
+  );
+  assert.deepEqual(
+    result.added.map((item) => item.source),
+    ["D:\\other.mp4"],
+  );
+  assert.equal(result.skipped, 2);
+});
+
+const ZOO = "jNQXAC9IVRw";
+
+test("one YouTube video written in different link forms is one video, another video is not", () => {
+  const forms = [
+    `https://www.youtube.com/watch?v=${ZOO}`,
+    `https://youtu.be/${ZOO}?si=abc123`,
+    `https://m.youtube.com/watch?v=${ZOO}&t=5s`,
+    `https://www.youtube.com/watch?v=${ZOO}&list=PL123&index=4`,
+    `https://www.youtube.com/shorts/${ZOO}`,
+    `https://www.youtube.com/live/${ZOO}`,
+    `https://www.youtube.com/embed/${ZOO}`,
+  ];
+  for (const form of forms) assert.equal(queueKey("link", form), queueKey("link", forms[0]), form);
+  assert.notEqual(queueKey("link", "https://youtu.be/AAAAAAAAAAA"), queueKey("link", forms[0]));
+  // Chỉ YouTube mới đọc mã từ ?v=. Trang khác có cùng chữ thì không phải cùng video.
+  assert.notEqual(queueKey("link", `https://example.com/watch?v=${ZOO}`), queueKey("link", forms[0]));
+});
+
+test("a running YouTube video is not queued again from its short link", () => {
+  const running = queueKey("link", `https://www.youtube.com/watch?v=${ZOO}`);
+  const result = appendJobs([], [job(`https://youtu.be/${ZOO}`, "link"), job("https://youtu.be/BBBBBBBBBBB", "link")], running);
+  assert.deepEqual(
+    result.added.map((item) => item.source),
+    ["https://youtu.be/BBBBBBBBBBB"],
+  );
+  assert.equal(result.skipped, 1);
+});
+
 test("a saved queue without textOnly still loads as off", () => {
   const row = job("D:\\a.mp4");
   delete (row as { textOnly?: boolean }).textOnly;

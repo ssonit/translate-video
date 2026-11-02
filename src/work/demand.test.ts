@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { playbackInterrupted, regionQueue, speechReview, splitText } from "./demand.ts";
+import { playbackInterrupted, regionQueue, secondsText, speechReview, splitText, undoHint } from "./demand.ts";
 
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done; }); return { promise, resolve }; }
 const flush = () => new Promise<void>(done => setImmediate(done));
@@ -91,4 +91,22 @@ test("pause suppresses a late failure but current failures remain visible", asyn
   assert.equal(failures.length, 0);
   queue.request({ root: "video", start: 50, end: 80, listen: true }); await queue.idle();
   assert.equal(failures.length, 1);
+});
+
+test("the undo button always says why it is off, and what it does when on", () => {
+  const nothing = "Chưa có lần lưu hay tách/gộp câu nào để hoàn tác.";
+  assert.equal(undoHint(false, false), nothing);
+  assert.equal(undoHint(false, true), nothing);
+  assert.match(undoHint(true, true), /Lưu hoặc bỏ thay đổi/);
+  assert.match(undoHint(true, false), /^Hoàn tác lần lưu/);
+});
+
+test("the time fields drop float noise from a computed end but keep what the user typed", () => {
+  assert.equal(secondsText(3.3600000000000003), 3.36);
+  assert.equal(secondsText(1.2 + 2.16), 3.36);
+  assert.equal(secondsText(1.2), 1.2);
+  assert.equal(secondsText(0), 0);
+  assert.equal(secondsText(2.345), 2.345);
+  assert.equal(secondsText(2.3456), 2.3456);
+  assert.ok(Number.isNaN(secondsText(Number.NaN)));
 });

@@ -40,6 +40,7 @@ export function useWorkState() {
   const [link, setLink] = useState("");
   const [composeVideo, setComposeVideo] = useState("");
   const [composeLink, setComposeLink] = useState("");
+  const [linkError, setLinkError] = useState("");
   const [queue, setQueue] = useState<QueueJob[]>(() => restoreQueue(readSavedQueue(), false));
   const [queuePolicy,setQueuePolicy]=useState(readQueuePolicy);
   const [queueHistory,setQueueHistory]=useState(readQueueHistory);
@@ -165,6 +166,8 @@ export function useWorkState() {
     setComposeVideo,
     composeLink,
     setComposeLink,
+    linkError,
+    setLinkError,
     queue,
     setQueue,
     queuePolicy,setQueuePolicy,queueHistory,setQueueHistory,queueHistoryRef,skipActive,runPauseRef,

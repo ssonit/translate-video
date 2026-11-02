@@ -19,8 +19,9 @@ import { AgainPane } from "./work/againPane";
 import { Composer } from "./work/composer";
 import { useWorkEffects } from "./work/effects";
 import { watchDataKey, watchMediaKey } from "./work/watchLoad";
-import { fileName, isCaptioned, jobFolder, overallEstimate, plainVideo, sameFile } from "./work/format";
+import { fileName, isCaptioned, jobFolder, noticeFades, overallEstimate, plainVideo, sameFile } from "./work/format";
 import { jobActions } from "./work/job";
+import { linkProblem } from "./work/linkCheck";
 import { Library } from "./work/library";
 import { NameForm } from "./work/names";
 import { playbackActions } from "./work/playback";
@@ -70,6 +71,13 @@ export default function Work({
     try { await job.stop(); }
     catch (error) { s.setError(String(error)); setCanceling(false); }
   }
+  // Thông báo xong việc nằm yên mãi thì thành rác trên màn hình. Lỗi thì giữ cho tới khi bạn đóng.
+  useEffect(() => {
+    if (!noticeFades(s.runNotice, s.running || s.downloading, s.error)) return;
+    const timer = window.setTimeout(() => s.setRunNotice(""), 12000);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [s.runNotice, s.running, s.downloading, s.error]);
   const [draftSetup, setDraftSetup] = useState<SetupSummary | null>(null);
   const draftGuard = useRef<(() => Promise<boolean>) | null>(null);
   const registerDraftGuard = useCallback((guard: (() => Promise<boolean>) | null) => { draftGuard.current = guard; }, []);
@@ -93,6 +101,11 @@ export default function Work({
     draftActivity("Đang mở nguồn…"); s.setError("");
     draftCanceled.current = false;
     try {
+      if (s.mode === "link") {
+        const problem = await linkProblem(s.composeLink.trim());
+        s.setLinkError(problem);
+        if (problem) return;
+      }
       const next = await invoke<DraftView>("open_draft", {
         source: s.mode === "file" ? s.composeVideo : s.composeLink,
         outputDir: s.folder, isLink: s.mode === "link",
@@ -142,6 +155,12 @@ export default function Work({
       job.chooseRender(cfg.render);setConfigOrigin("watch");s.setView("configure");onChanged();
     }catch(e){s.setOpenNote(String(e));}
   }
+  // Gợi ý "Che / làm mờ chữ nguồn" ở màn việc mới: mở trang cấu hình và đưa người dùng tới đúng phần đó.
+  function openMaskSettings() {
+    setConfigOrigin("new"); setConfigTab("visual"); s.setView("configure");
+    // Trang cấu hình đang ẩn, đợi nó hiện rồi mới cuộn được.
+    window.setTimeout(() => document.getElementById("mask-options")?.scrollIntoView({ block: "center" }), 50);
+  }
   const lock = lockNote(setup);
   const shown = s.playingKept || s.listenFile || s.result;
   const busyText = draftBusy || (s.running
@@ -166,10 +185,12 @@ export default function Work({
   const liveFraction = s.downloading ? s.download.progress : s.running && overall.fraction > 0 ? overall.fraction : null;
   const liveTitle = s.downloading ? "Đang tải" : s.video ? fileName(s.video) : "Video đang xử lý";
   const finalizing = s.running && !s.downloading && s.steps.length > 0 && s.steps.every(step => step.state === "done" || step.state === "skipped");
+  const failedStep = s.steps.find((step) => step.state === "error");
+  // Lý do đầy đủ chỉ hiện một chỗ (dòng đỏ ở Hàng đợi). Chỗ này chỉ nói dừng ở đâu.
   const liveDetail = s.downloading
     ? s.download.detail || "Đang tải"
     : s.error && !s.running
-      ? s.error
+      ? s.error === "Đã dừng." ? "Đã dừng" : failedStep ? `Lỗi ở bước ${failedStep.label}` : "Xử lý bị lỗi"
       : s.nameReview ? "Đang chờ bạn kiểm tra tên"
       : finalizing ? "Đang lưu phiên bản và hoàn tất kết quả…"
       : activeStep
@@ -210,11 +231,12 @@ export default function Work({
           <div className="mast-actions"><SetupChip summary={draftRoot && draftSetup && (s.view === "new" || draftBusy) ? draftSetup : setup} onClick={onSetup} /></div>
         </div>
         {s.runNotice || s.running || s.downloading ? <div className="studio-run-status" role="status" aria-live="polite">
-          {s.running || s.downloading ? <span className="studio-run-spinner" aria-hidden="true" /> : <span aria-hidden="true">{s.error ? "!" : "✓"}</span>}
-          <div><strong>{draftBusy || s.runNotice || (liveDetail === "Đang chạy" ? "Đang chuẩn bị xử lý…" : liveDetail)}</strong><small>{s.running || s.downloading ? finalizing ? "Đã ghép xong. App sẽ tự mở kết quả sau khi lưu hoàn tất." : `${liveDetail}${activeStep?.detail ? ` · ${activeStep.detail}` : ""}` : "Lồng tiếng → Hàng đợi → Xem kết quả"}</small></div>
+          {s.running || s.downloading ? <span className="studio-run-spinner" aria-hidden="true" /> : <span aria-hidden="true">{s.error === "Đã dừng." ? "■" : s.error ? "!" : "✓"}</span>}
+          <div><strong>{draftBusy || s.runNotice || (liveDetail === "Đang chạy" ? "Đang chuẩn bị xử lý…" : liveDetail)}</strong><small>{s.running || s.downloading ? finalizing ? "Đã ghép xong. App sẽ tự mở kết quả sau khi lưu hoàn tất." : `${liveDetail}${activeStep?.detail ? ` · ${activeStep.detail}` : ""}` : s.error && s.error !== "Đã dừng." ? "Lý do nằm ở Hàng đợi, kèm nút Thử lại." : "Lồng tiếng → Hàng đợi → Xem kết quả"}</small></div>
           {s.view !== "progress" && (s.running || s.downloading) && !draftBusy ? <button type="button" className="link" onClick={() => s.setView("progress")}>Xem tiến độ</button> : null}
           {s.running || s.downloading ? <button type="button" className="link" disabled={canceling} onClick={() => void cancelCurrent()}>{canceling ? "Đang dừng…" : "Hủy xử lý"}</button> : null}
           {!s.running && !s.downloading && !s.error && s.result && s.view !== "watch" ? <button type="button" className="check" onClick={() => s.setView("watch")}>Xem kết quả</button> : null}
+          {!s.running && !s.downloading && s.error && s.error !== "Đã dừng." && s.view !== "progress" ? <button type="button" className="check" onClick={() => s.setView("progress")}>Xem lỗi</button> : null}
           {s.runNotice && !s.running && !s.downloading ? <button type="button" className="link" aria-label="Đóng thông báo xử lý" onClick={() => s.setRunNotice("")}>Đóng</button> : null}
         </div> : null}
       </header>
@@ -471,6 +493,7 @@ export default function Work({
               onMode={s.setMode}
               composeVideo={s.composeVideo}
               composeLink={s.composeLink}
+              linkError={s.linkError}
               onLink={s.setComposeLink}
               onPickVideo={() => void job.pickVideo()}
               audioOnly={s.audioOnly}
@@ -481,6 +504,8 @@ export default function Work({
               onSkip={(on) => void job.chooseSkip(on).then(onChanged)}
               burnCaptions={s.burnCaptions}
               onBurn={(checked) => void job.chooseBurn(checked)}
+              maskOn={s.render.mask.enabled}
+              onMask={openMaskSettings}
               captioning={s.captioning || s.presetApplying}
               running={s.running}
               folder={s.folder}
@@ -531,7 +556,8 @@ export default function Work({
                 sample: "Xuất thử 8 giây để kiểm tra trước khi làm cả video.",
               }[configTab]}</p>
               <div hidden={configTab !== "visual"}><StyleEditor standalone  audioOnly={s.audioOnly} value={s.render} onChange={job.chooseRender}
-                source={s.mode === "file" ? s.composeVideo : ""} disabled={s.captioning || s.running || s.presetApplying}
+                // Trang cấu hình ẩn thì thả video xem thử, kẻo giữ nguyên một video đã tải của việc khác.
+                source={s.view === "configure" && configTab === "visual" && s.mode === "file" ? s.composeVideo : ""} disabled={s.captioning || s.running || s.presetApplying}
                 captions={!s.audioOnly && (s.textOnly || s.burnCaptions)} presets={s.presets} onSave={job.savePreset}
                 onApply={(p) => void job.applyPreset(p).then(onChanged)} onDelete={job.deletePreset} /></div>
               <ProductionOptions section={configTab} value={s.render} onChange={job.chooseRender} lang={s.target} voice={s.voice}

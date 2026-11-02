@@ -428,7 +428,7 @@ pub(crate) fn prepare_listen(
     stopped(cancel)?;
     download_report(app, "Đang hỏi YouTube về phụ đề.", None);
     let (title, id) = youtube_title(&url, cancel)?;
-    let stem = listen_stem(&title, &id);
+    let stem = listen_folder(output_dir, &title, &id, &url);
     let job = Job::open_listen(output_dir, &stem, &url)?;
     crate::note_live_video(app, &job.root);
     if let Some(cues) = settle_transcript(&job) {
@@ -669,16 +669,57 @@ fn youtube_title(url: &str, cancel: &AtomicBool) -> Result<(String, String), Str
     Ok((title, id))
 }
 
+// Tên folder việc của Audio: đúng tên yt-dlp đặt cho file video của link này (-o "%(title).120B [%(id)s]").
+// Video tải về mang tên đó và folder việc lấy theo tên file, nên cùng tên thì Audio và Video dùng chung một folder.
 fn listen_stem(title: &str, id: &str) -> String {
-    let title = truncate_bytes(title.trim(), 120);
+    let title = ytdlp_file_part(&truncate_bytes(title, 120));
     let raw = if id.is_empty() || id.eq_ignore_ascii_case("na") {
         title
     } else {
         format!("{title} [{id}]")
     };
-    crate::job::folder_name(Path::new(&raw))
+    crate::job::clean_folder_name(&raw)
 }
 
+// Cùng bảng thay chữ với `sanitize_filename` của yt-dlp: dấu Windows cấm thành dạng toàn chiều rộng,
+// không bị bỏ đi. Ký tự điều khiển bỏ, xuống dòng thành dấu cách.
+fn ytdlp_file_part(text: &str) -> String {
+    text.chars()
+        .filter_map(|ch| match ch {
+            '/' => Some('\u{29F8}'),
+            '\\' => Some('\u{29F9}'),
+            '"' | '*' | ':' | '<' | '>' | '?' | '|' => char::from_u32(ch as u32 + 0xFEE0),
+            '\n' => Some(' '),
+            _ if (ch as u32) < 32 || ch as u32 == 127 => None,
+            _ => Some(ch),
+        })
+        .collect()
+}
+
+// Folder Audio do bản app cũ tạo: bỏ hẳn các dấu Windows cấm thay vì đổi sang dạng toàn chiều rộng.
+fn older_listen_stem(title: &str, id: &str) -> String {
+    let title = truncate_bytes(title.trim(), 120).trim().to_string();
+    let raw = if id.is_empty() || id.eq_ignore_ascii_case("na") {
+        title
+    } else {
+        format!("{title} [{id}]")
+    };
+    crate::job::clean_folder_name(&raw)
+}
+
+// Tên folder việc cho một lần chạy Audio. Việc Audio do bản cũ tạo vẫn là folder của link đó,
+// nên dùng lại nó thay vì mở thêm một folder mới cho cùng video.
+fn listen_folder(output_dir: &Path, title: &str, id: &str, url: &str) -> String {
+    let stem = listen_stem(title, id);
+    let older = older_listen_stem(title, id);
+    if older != stem && same_video_link(&source_url(&output_dir.join(&older)), url) {
+        older
+    } else {
+        stem
+    }
+}
+
+// yt-dlp cắt 120 byte trên chữ gốc, trước khi thay dấu cấm, và không cắt dấu cách ở chỗ cắt.
 fn truncate_bytes(text: &str, max: usize) -> String {
     if text.len() <= max {
         return text.to_string();
@@ -687,7 +728,7 @@ fn truncate_bytes(text: &str, max: usize) -> String {
     while end > 0 && !text.is_char_boundary(end) {
         end -= 1;
     }
-    text[..end].trim().to_string()
+    text[..end].to_string()
 }
 
 fn fetch_subs(url: &str, dir: &Path, cancel: &AtomicBool) -> Result<(), String> {
@@ -1112,6 +1153,31 @@ fn video_id(url: &str) -> Option<String> {
     valid.then_some(candidate)
 }
 
+// Hai link cùng chỉ một video dù viết khác dạng: youtu.be/ID?si=..., watch?v=ID&list=...&index=...
+// Link rút gọn chưa có id (v.douyin.com, vm.tiktok.com) chỉ khớp khi giống hệt, không đoán.
+pub(crate) fn same_video_link(saved: &str, wanted: &str) -> bool {
+    if saved.is_empty() {
+        return false;
+    }
+    saved == wanted
+        || matches!((video_key(saved), video_key(wanted)), (Some(a), Some(b)) if a == b)
+}
+
+// Site cộng id. Chỉ ba site app nhận mới có khóa, và hai site khác nhau không khớp dù id giống nhau.
+fn video_key(url: &str) -> Option<(&'static str, String)> {
+    let host = url_host(url)?;
+    let site = if youtube_host(&host) {
+        "youtube"
+    } else if douyin_host(&host) {
+        "douyin"
+    } else if tiktok_host(&host) {
+        "tiktok"
+    } else {
+        return None;
+    };
+    Some((site, video_id(url)?))
+}
+
 const YOUTUBE_CHUNK: u64 = 10 * 1024 * 1024;
 
 fn default_format() -> &'static str {
@@ -1398,6 +1464,70 @@ mod tests {
         assert_eq!(video_id("https://www.youtube.com/watch?v=short"), None);
     }
 
+    // Một video, nhiều cách viết link: link chia sẻ, link đang xem trong danh sách, shorts, nhúng.
+    #[test]
+    fn links_to_the_same_video_match_however_they_are_written() {
+        let watch = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
+        for same in [
+            watch,
+            "https://youtu.be/dQw4w9WgXcQ?si=AbCdEf",
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=WL&index=7",
+            "https://www.youtube.com/watch?list=WL&v=dQw4w9WgXcQ&t=5s",
+            "https://m.youtube.com/watch?v=dQw4w9WgXcQ",
+            "https://www.youtube.com/shorts/dQw4w9WgXcQ",
+            "https://www.youtube.com/live/dQw4w9WgXcQ",
+            "https://www.youtube.com/embed/dQw4w9WgXcQ",
+        ] {
+            assert!(same_video_link(watch, same), "{same}");
+            assert!(same_video_link(same, watch), "{same}");
+        }
+        let douyin = "https://www.douyin.com/video/6961737553342991651";
+        assert!(same_video_link(
+            douyin,
+            "https://www.douyin.com/jingxuan?modal_id=6961737553342991651"
+        ));
+        let tiktok = "https://www.tiktok.com/@ten/video/7234567890123456789";
+        assert!(same_video_link(
+            tiktok,
+            "https://m.tiktok.com/@nguoi.khac/video/7234567890123456789?is_from_webapp=1"
+        ));
+    }
+
+    // Khớp nhầm là dùng lại folder của video khác. Không chắc thì không khớp.
+    #[test]
+    fn links_that_are_not_clearly_the_same_video_never_match() {
+        let watch = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
+        // Id khác một chữ, hoặc chỉ khác chữ hoa (id YouTube phân biệt hoa thường).
+        assert!(!same_video_link(watch, "https://youtu.be/dQw4w9WgXcR"));
+        assert!(!same_video_link(watch, "https://youtu.be/DQW4W9WGXCQ"));
+        // Không có link đã lưu thì không có gì để khớp.
+        assert!(!same_video_link("", watch));
+        assert!(!same_video_link(watch, ""));
+        assert!(!same_video_link("", ""));
+        // Link rút gọn chưa có id: chỉ khớp khi giống hệt, không đoán.
+        let short = "https://v.douyin.com/iRNBho6/";
+        assert!(same_video_link(short, short));
+        assert!(!same_video_link(short, "https://v.douyin.com/iRNBho7/"));
+        assert!(!same_video_link(
+            short,
+            "https://www.douyin.com/video/6961737553342991651"
+        ));
+        // Cùng dãy số ở hai site là hai video khác nhau.
+        assert!(!same_video_link(
+            "https://www.douyin.com/video/6961737553342991651",
+            "https://www.tiktok.com/@ten/video/6961737553342991651"
+        ));
+        // Chỉ site app nhận mới có id. `?v=` trên trang lạ không phải video YouTube.
+        assert!(!same_video_link(
+            watch,
+            "https://example.com/watch?v=dQw4w9WgXcQ"
+        ));
+        assert!(!same_video_link(
+            "https://example.com/watch?v=dQw4w9WgXcQ",
+            "https://example.org/watch?v=dQw4w9WgXcQ"
+        ));
+    }
+
     #[test]
     fn ytdlp_progress_lines_are_read() {
         let update = ytdlp_progress("DLP downloading 1048576 4194304 NA 2097152.5 2").unwrap();
@@ -1612,14 +1742,186 @@ mod tests {
 
     #[test]
     fn listen_stem_matches_the_saved_folder_name() {
-        assert_eq!(listen_stem("Talk: one?", "abc"), "Talk one [abc]");
+        assert_eq!(listen_stem("Talk: one?", "abc"), "Talk\u{ff1a} one\u{ff1f} [abc]");
         assert_eq!(
             listen_stem(
                 "Tập 2 | WUWA: Xuyên Không Ta Sở Hữu Thập Chủng Ảnh Pháp",
                 "tSe01jpxlRE"
             ),
-            "Tập 2  WUWA Xuyên Không Ta Sở Hữu Thập Chủng Ảnh Pháp [tSe01jpxlRE]"
+            "Tập 2 \u{ff5c} WUWA\u{ff1a} Xuyên Không Ta Sở Hữu Thập Chủng Ảnh Pháp [tSe01jpxlRE]"
         );
         assert_eq!(LISTEN_AUDIO_FORMAT, "ba[abr<=80]/139/ba[ext=m4a]/ba");
+    }
+
+    // Tên không phải đường dẫn file: dấu chấm và dấu gạch trong tên video không được cắt mất phần sau.
+    #[test]
+    fn listen_stem_keeps_the_whole_title_and_its_id() {
+        assert_eq!(listen_stem("Mr. Beast Video", "abc"), "Mr. Beast Video [abc]");
+        assert_eq!(
+            listen_stem(
+                "Grok Bot Just Got 2 Massive Upgrades. Do These Things Now.",
+                "MgvwZaDPCs4"
+            ),
+            "Grok Bot Just Got 2 Massive Upgrades. Do These Things Now. [MgvwZaDPCs4]"
+        );
+        assert_eq!(listen_stem("Build $200/day Bot", "abc"), "Build $200\u{29f8}day Bot [abc]");
+    }
+
+    // Tên file yt-dlp 2026.08.19 đặt thật cho các tiêu đề này (`-o "%(title).120B [%(id)s].%(ext)s"`, id abcdefghijk),
+    // hỏi offline bằng --load-info-json. Video tải về mang tên đó nên folder việc của Video cũng vậy.
+    // Audio phải ra đúng tên đó thì hai chế độ mới dùng chung một folder.
+    #[test]
+    fn listen_stem_is_the_folder_name_the_downloaded_video_gets() {
+        let id = "abcdefghijk";
+        let spaced = "aaaaaaaaa ".repeat(11);
+        let cases: Vec<(String, String)> = vec![
+            ("Plain title".into(), "Plain title [abcdefghijk].mp4".into()),
+            ("Ends with dot.".into(), "Ends with dot. [abcdefghijk].mp4".into()),
+            (".Starts with dot".into(), ".Starts with dot [abcdefghijk].mp4".into()),
+            // Dấu Windows cấm được thay bằng dạng toàn chiều rộng, không bị bỏ đi.
+            (
+                "Tập 2 | WUWA: Xuyên Không Ta Sở Hữu Thập Chủng Ảnh Pháp".into(),
+                "Tập 2 \u{ff5c} WUWA\u{ff1a} Xuyên Không Ta Sở Hữu Thập Chủng Ảnh Pháp [abcdefghijk].mp4".into(),
+            ),
+            (
+                "A|B:C/D?E*F<G>H\"I\\J".into(),
+                "A\u{ff5c}B\u{ff1a}C\u{29f8}D\u{ff1f}E\u{ff0a}F\u{ff1c}G\u{ff1e}H\u{ff02}I\u{29f9}J [abcdefghijk].mp4".into(),
+            ),
+            (
+                "Quote \"hello\" and 'single'".into(),
+                "Quote \u{ff02}hello\u{ff02} and 'single' [abcdefghijk].mp4".into(),
+            ),
+            // Chữ toàn chiều rộng có sẵn trong tiêu đề giữ nguyên.
+            (
+                "Native \u{ff5c} \u{ff1a} \u{ff1f} \u{ff0f} stays".into(),
+                "Native \u{ff5c} \u{ff1a} \u{ff1f} \u{ff0f} stays [abcdefghijk].mp4".into(),
+            ),
+            // Ký tự điều khiển bị bỏ, xuống dòng thành dấu cách.
+            ("Tab\there and newline\nthere".into(), "Tabhere and newline there [abcdefghijk].mp4".into()),
+            ("Control\u{1}char\u{7f}".into(), "Controlchar [abcdefghijk].mp4".into()),
+            // yt-dlp không cắt dấu cách đầu và cuối tiêu đề; folder chỉ bỏ dấu cách ngoài cùng của cả tên.
+            (" spaced out ".into(), " spaced out  [abcdefghijk].mp4".into()),
+            // Cắt 120 byte trên chữ gốc, trước khi thay dấu. Dấu cách ngay chỗ cắt còn lại.
+            (format!("{spaced}bbbbbbbbbbbbbbb"), format!("{spaced}bbbbbbbbbb [abcdefghijk].mp4")),
+            ("x".repeat(119) + " tail words", format!("{}  [abcdefghijk].mp4", "x".repeat(119))),
+            ("y".repeat(118) + "|zzzz", format!("{}\u{ff5c}z [abcdefghijk].mp4", "y".repeat(118))),
+            // Chỗ cắt rơi giữa chữ nhiều byte thì lùi về đầu chữ.
+            ("a".to_string() + &"ế".repeat(45), format!("a{} [abcdefghijk].mp4", "ế".repeat(39))),
+            ("ab".to_string() + &"\u{1F600}".repeat(40), format!("ab{} [abcdefghijk].mp4", "\u{1F600}".repeat(29))),
+            (
+                "Tập 2 | Nghe chép chính tả tiếng Anh - LEVEL A1 - Học từ vựng mỗi ngày cùng giáo viên bản ngữ: phần 1".into(),
+                "Tập 2 \u{ff5c} Nghe chép chính tả tiếng Anh - LEVEL A1 - Học từ vựng mỗi ngày cùng giáo viên bản ngữ\u{ff1a} p [abcdefghijk].mp4".into(),
+            ),
+        ];
+        for (title, file) in cases {
+            assert_eq!(
+                listen_stem(&title, id),
+                crate::job::folder_name(Path::new(&file)),
+                "{title:?}"
+            );
+        }
+    }
+
+    fn scratch_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("listen-folder-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("out")).unwrap();
+        dir
+    }
+
+    const PIPE_TITLE: &str = "Tập 2 | WUWA: Xuyên Không Ta Sở Hữu Thập Chủng Ảnh Pháp";
+    const PIPE_ID: &str = "tSe01jpxlRE";
+    const PIPE_LINK: &str = "https://youtu.be/tSe01jpxlRE";
+    // Tên folder Audio mà bản cũ của app đặt: bỏ hẳn dấu | và :.
+    const PIPE_OLDER: &str = "Tập 2  WUWA Xuyên Không Ta Sở Hữu Thập Chủng Ảnh Pháp [tSe01jpxlRE]";
+    // Tên yt-dlp đặt cho file video của cùng tiêu đề.
+    const PIPE_FILE: &str =
+        "Tập 2 \u{ff5c} WUWA\u{ff1a} Xuyên Không Ta Sở Hữu Thập Chủng Ảnh Pháp [tSe01jpxlRE]";
+
+    fn downloaded_pipe_video(output: &Path) -> PathBuf {
+        let file = output.join("tai-ve").join(format!("{PIPE_FILE}.mp4"));
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, b"video").unwrap();
+        file
+    }
+
+    // Tiêu đề có dấu | hoặc :, cùng một link: chạy Audio rồi Video, hay Video rồi Audio, đều một folder việc.
+    #[test]
+    fn audio_then_video_of_a_title_with_special_characters_share_one_folder() {
+        let dir = scratch_dir("audio-then-video");
+        let output = dir.join("out");
+        let stem = listen_folder(&output, PIPE_TITLE, PIPE_ID, PIPE_LINK);
+        let listen = Job::open_listen(&output, &stem, PIPE_LINK).unwrap();
+        let video = Job::open(&downloaded_pipe_video(&output), &output).unwrap();
+        assert_eq!(video.root, listen.root);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn video_then_audio_of_a_title_with_special_characters_share_one_folder() {
+        let dir = scratch_dir("video-then-audio");
+        let output = dir.join("out");
+        let video = Job::open(&downloaded_pipe_video(&output), &output).unwrap();
+        let stem = listen_folder(&output, PIPE_TITLE, PIPE_ID, PIPE_LINK);
+        let listen = Job::open_listen(&output, &stem, PIPE_LINK).unwrap();
+        assert_eq!(listen.root, video.root);
+        assert_eq!(source_url(&listen.root), PIPE_LINK);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Việc Audio do bản cũ tạo (tên bỏ hẳn dấu) vẫn là folder của link đó: việc dở và kết quả không bị bỏ lại.
+    #[test]
+    fn a_listen_job_made_by_an_older_version_keeps_its_folder() {
+        let dir = scratch_dir("older-folder");
+        let output = dir.join("out");
+        let older = Job::open_listen(&output, PIPE_OLDER, PIPE_LINK).unwrap();
+        // Dán lại bằng link dạng khác của cùng video vẫn ra folder cũ.
+        let again = "https://www.youtube.com/watch?v=tSe01jpxlRE&list=WL&index=7";
+        let stem = listen_folder(&output, PIPE_TITLE, PIPE_ID, again);
+        assert_eq!(stem, PIPE_OLDER);
+        assert_eq!(Job::open_listen(&output, &stem, again).unwrap().root, older.root);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_older_folder_that_holds_the_link_wins_over_the_video_folder() {
+        let dir = scratch_dir("older-and-video");
+        let output = dir.join("out");
+        Job::open_listen(&output, PIPE_OLDER, PIPE_LINK).unwrap();
+        let video = Job::open(&downloaded_pipe_video(&output), &output).unwrap();
+        assert_eq!(video.root, output.join(PIPE_FILE));
+        assert_eq!(listen_folder(&output, PIPE_TITLE, PIPE_ID, PIPE_LINK), PIPE_OLDER);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_listen_job_without_an_older_folder_gets_the_name_the_video_gets() {
+        let dir = scratch_dir("no-older-folder");
+        let output = dir.join("out");
+        assert_eq!(listen_folder(&output, PIPE_TITLE, PIPE_ID, PIPE_LINK), PIPE_FILE);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_listen_job_never_takes_an_older_folder_of_another_video() {
+        let dir = scratch_dir("older-other-video");
+        let output = dir.join("out");
+        Job::open_listen(&output, PIPE_OLDER, "https://youtu.be/zzzzzzzzzzz").unwrap();
+        assert_eq!(listen_folder(&output, PIPE_TITLE, PIPE_ID, PIPE_LINK), PIPE_FILE);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_older_folder_without_a_saved_link_is_not_taken() {
+        let dir = scratch_dir("older-no-link");
+        let output = dir.join("out");
+        let root = output.join(PIPE_OLDER);
+        std::fs::create_dir_all(&root).unwrap();
+        let recording = dir.join("my own recording.mp4");
+        std::fs::write(&recording, b"video").unwrap();
+        set_source_media(&root, &recording).unwrap();
+        assert_eq!(source_url(&root), "");
+        assert_eq!(listen_folder(&output, PIPE_TITLE, PIPE_ID, PIPE_LINK), PIPE_FILE);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -80,7 +80,7 @@ export function ProductionOptions({section,onChange,value:s,lang,voice,source,fo
           {range("Vị trí dọc",s.logo.y,100,v=>update({logo:{...s.logo,y:v}}))}</>}
       </fieldset>
     </details>}
-    {(!section || section === "visual")&&!audioOnly&&<details open={section ? true : undefined}><summary>Che / làm mờ chữ nguồn {s.mask.enabled?"· Đang bật":""}</summary>
+    {(!section || section === "visual")&&!audioOnly&&<details id="mask-options" open={section ? true : undefined}><summary>Che / làm mờ chữ nguồn {s.mask.enabled?"· Đang bật":""}</summary>
       <fieldset className="style-controls" disabled={disabled||busy}>
         <label className="style-check"><input type="checkbox" checked={s.mask.enabled} onChange={e=>update({mask:{...s.mask,enabled:e.target.checked}})}/>Xử lý vùng chữ gốc</label>
         {s.mask.enabled&&<><label>Cách xử lý<select value={s.mask.mode} onChange={e=>update({mask:{...s.mask,mode:e.target.value as "blur"|"solid"}})}><option value="blur">Làm mờ</option><option value="solid">Che bằng màu nền</option></select></label>

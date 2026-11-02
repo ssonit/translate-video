@@ -60,6 +60,8 @@ export function ProgressPane({
   lock: string; onTools: () => void;
 }) {
   const activeStep = steps.find((step) => step.state === "running");
+  // Bấm Dừng không phải lỗi: không tô đỏ, không gọi là "Thử lại".
+  const stoppedByUser = error === "Đã dừng.";
   const finalizing = running && !downloading && steps.length > 0 && steps.every(step => step.state === "done" || step.state === "skipped");
   const ran = [`đã chạy ${duration(elapsed)}`, remainingText(remaining), queueCount > 0 ? `còn ${queueCount} trong hàng` : ""]
     .filter(Boolean)
@@ -109,11 +111,11 @@ export function ProgressPane({
       </ol>
       {!nameReview && activeStep ? <p className="phase-current" aria-live="polite"><strong>{activeStep.label}</strong>{activeStep.detail ? ` · ${activeStep.detail}` : ""}</p> : null}
       {error ? (
-        <p className="error">
+        <p className={stoppedByUser ? "key-note" : "error"}>
           {error}{" "}
           {!running && canRetry ? (
             <button type="button" className="link" onClick={() => void onRetry()}>
-              Thử lại
+              {stoppedByUser ? "Chạy lại video này" : "Thử lại"}
             </button>
           ) : null}
         </p>
@@ -136,7 +138,7 @@ export function ProgressPane({
       ) : (
         <>
           <div className="pane-scroll">
-            <details className="progress-details" open={error ? true : undefined}>
+            <details className="progress-details" open={error && !stoppedByUser ? true : undefined}>
               <summary>Chi tiết {steps.length} bước</summary>
             <ol className="steps">
               {steps.map((step, index) => {

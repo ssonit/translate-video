@@ -14,6 +14,7 @@ import type { WatchUpdate } from "../WatchLive";
 import { errorText, fileName, freshSteps } from "./format";
 import type { Session } from "./state";
 import type { FinishedDub, JobSpec, Prefs } from "./types";
+import { linkProblem } from "./linkCheck";
 import { MODEL_HINTS } from "./models";
 
 export function jobActions(s: Session) {
@@ -76,9 +77,11 @@ export function jobActions(s: Session) {
   }
 
   function noteRunning(spec: JobSpec, label = "", id = "") {
+    // Chạy lại sau khi đã tải xong thì nguồn đổi từ link sang file, nhưng vẫn là cùng một việc.
     const same =
       s.activeJob.current &&
-      queueKey(s.activeJob.current.mode, s.activeJob.current.source) === queueKey(spec.mode, spec.source);
+      ((id !== "" && s.activeJob.current.id === id) ||
+        queueKey(s.activeJob.current.mode, s.activeJob.current.source) === queueKey(spec.mode, spec.source));
     const job: QueueJob = {
       id: id || (same ? s.activeJob.current!.id : "") || `live-${Date.now().toString(36)}`,
       label: label || (same ? s.activeJob.current!.label : "") || queueLabel(spec.mode, spec.source),
@@ -111,6 +114,16 @@ export function jobActions(s: Session) {
     writeSavedQueue({ waiting: s.queueRef.current, current: null });
   }
 
+  // Việc vừa lỗi vẫn nằm ở ô "đang chạy". Chạy video khác thì thả nó ra; để yên thì takeActive
+  // xếp nó lại đầu hàng và nó chạy lại, lỗi lại. Lượt lỗi vẫn còn trong lịch sử để xếp lại khi muốn.
+  function dropFailedActive(next?: Pick<JobSpec, "mode" | "source">) {
+    const active = s.activeJob.current;
+    const last = s.queueHistoryRef.current[s.queueHistoryRef.current.length - 1];
+    if (!active || last?.state !== "failed" || last.job.id !== active.id) return;
+    if (next && queueKey(next.mode, next.source) === queueKey(active.mode, active.source)) return;
+    releaseRunning(active);
+  }
+
   function jobSnapshot(jobMode: "file" | "link", source: string): QueueJob {
     return {
       id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
@@ -133,11 +146,15 @@ export function jobActions(s: Session) {
     return { provider: s.provider, model: s.model || MODEL_HINTS[s.provider]?.fallback || "", useTerms: s.useTerms };
   }
 
-  function activeQueueKey() {
-    if (!s.running) return "";
-    if (s.downloading && s.link.trim()) return queueKey("link", s.link);
-    if (s.video) return queueKey("file", s.video);
-    return "";
+  // Video đang chạy được biết bằng cả link gốc lẫn file đã tải từ link đó.
+  function activeQueueKeys() {
+    if (!s.running) return [];
+    const keys: string[] = [];
+    const active = s.activeJob.current;
+    if (active) keys.push(queueKey(active.mode, active.source));
+    if (s.downloading && s.link.trim()) keys.push(queueKey("link", s.link));
+    if (s.video) keys.push(queueKey("file", s.video));
+    return keys;
   }
 
   function pushJobs(items: QueueJob[]) {
@@ -145,11 +162,11 @@ export function jobActions(s: Session) {
       s.setQueueNote("Chưa chọn folder kết quả.");
       return 0;
     }
-    const result = appendJobs(s.queueRef.current, items, activeQueueKey());
+    const result = appendJobs(s.queueRef.current, items, activeQueueKeys());
     rememberQueue(result.queue);
     if (result.added.length === 1) s.setQueueNote(`Đã thêm ${result.added[0].label} vào hàng.`);
     else if (result.added.length > 1) s.setQueueNote(`Đã thêm ${result.added.length} video vào hàng.`);
-    else s.setQueueNote("Video này đã có trong hàng.");
+    else s.setQueueNote("Video này đang chạy hoặc đã có trong hàng.");
     void nameQueuedLinks(result.added);
     return result.added.length;
   }
@@ -176,9 +193,14 @@ export function jobActions(s: Session) {
     );
   }
 
-  function enqueueCompose() {
+  async function enqueueCompose() {
     const source = s.mode === "file" ? s.composeVideo.trim() : s.composeLink.trim();
     if (!source || !s.folder) return;
+    if (s.mode === "link") {
+      const problem = await linkProblem(source);
+      s.setLinkError(problem);
+      if (problem) return;
+    }
     const added = pushJobs([jobSnapshot(s.mode, source)]);
     if (added > 0) {
       if (s.mode === "file") s.setComposeVideo("");
@@ -352,7 +374,8 @@ export function jobActions(s: Session) {
     s.setError("");
     s.setQueueNote("");
     s.setResult("");
-    s.setRunNotice(`Đã bắt đầu ${label || fileName(spec.source)}. Theo dõi xử lý tại Hàng đợi.`);
+    // Link thì gọi bằng nhãn trong hàng (trang · mã), không phải đoạn cuối của địa chỉ.
+    s.setRunNotice(`Đã bắt đầu ${s.activeJob.current?.label || label || fileName(spec.source)}. Theo dõi xử lý tại Hàng đợi.`);
     s.setNameEdit(false);
     s.setAgainOpen(false);
     s.setPlayingKept("");
@@ -417,7 +440,8 @@ export function jobActions(s: Session) {
       return proceed;
     } catch (caught) {
       const message=errorText(caught);
-      s.setRunNotice(message === "Đã dừng." ? "Đã dừng xử lý." : `Xử lý bị gián đoạn: ${message}`);
+      // Lý do chỉ ghi một chỗ, ở s.error. Thông báo chỉ nói việc đã dừng.
+      s.setRunNotice(message === "Đã dừng." ? "Đã dừng xử lý." : "Xử lý bị gián đoạn.");
       if(s.skipActive.current){
         s.skipActive.current=false;recordRun(spec,"skipped",attemptStarted);proceed=!s.holdQueue.current;
       }else{
@@ -463,6 +487,7 @@ export function jobActions(s: Session) {
     s.gate.current = true;
     s.holdQueue.current = false;
     try {
+      dropFailedActive({ mode: "file", source });
       const ok = await execute({
         mode: "file",
         source,
@@ -489,10 +514,7 @@ export function jobActions(s: Session) {
     try {
       // Continuing the waiting list is not a retry of the failed current job.
       // Keep that attempt in history; otherwise takeActive puts it back in line.
-      const active = s.activeJob.current;
-      const history = s.queueHistoryRef.current;
-      const last = history[history.length - 1];
-      if (active && last?.state === "failed" && last.job.id === active.id) releaseRunning(active);
+      dropFailedActive();
       await pump();
     } finally {
       s.gate.current = false;
@@ -501,7 +523,7 @@ export function jobActions(s: Session) {
 
   async function run() {
     if (s.running) {
-      enqueueCompose();
+      await enqueueCompose();
       return;
     }
     if (s.gate.current) return;
@@ -510,11 +532,18 @@ export function jobActions(s: Session) {
       await runQueue();
       return;
     }
-    if (s.mode === "file") s.setComposeVideo("");
-    else s.setComposeLink("");
     s.gate.current = true;
     s.holdQueue.current = false;
     try {
+      // Link sai thì dừng ở ô nhập: ô giữ nguyên để sửa, không chạy, không xếp hàng, không ghi lịch sử.
+      if (s.mode === "link") {
+        const problem = await linkProblem(source);
+        s.setLinkError(problem);
+        if (problem) return;
+      }
+      if (s.mode === "file") s.setComposeVideo("");
+      else s.setComposeLink("");
+      dropFailedActive({ mode: s.mode, source });
       const ok = await execute({
         mode: s.mode,
         source,
@@ -540,7 +569,9 @@ export function jobActions(s: Session) {
     s.gate.current = true;
     s.holdQueue.current = false;
     try {
-      const ok = await execute(spec);
+      // Chạy lại đúng việc vừa lỗi: giữ nguyên mã và tên để không xếp thêm một bản vào hàng.
+      const failed = s.activeJob.current;
+      const ok = await execute(spec, failed?.label ?? "", failed?.id ?? "");
       if (ok) await pump();
     } finally {
       s.gate.current = false;

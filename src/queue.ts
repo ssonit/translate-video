@@ -31,9 +31,34 @@ function linkIn(source: string) {
   return shareLink(value) ?? value;
 }
 
+const YOUTUBE_HOSTS = new Set(["youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"]);
+
+// Mã 11 ký tự của video YouTube, đọc từ link watch, youtu.be, shorts, live hoặc embed. Không đọc ra thì trả rỗng.
+function youtubeId(link: string) {
+  let url: URL;
+  try {
+    url = new URL(link);
+  } catch {
+    return "";
+  }
+  const host = url.hostname.toLowerCase();
+  if (!YOUTUBE_HOSTS.has(host)) return "";
+  const parts = url.pathname.split("/").filter(Boolean);
+  const candidate =
+    host === "youtu.be"
+      ? parts[0] ?? ""
+      : url.searchParams.get("v") ?? (["shorts", "live", "embed"].includes(parts[0] ?? "") ? parts[1] ?? "" : "");
+  return /^[A-Za-z0-9_-]{11}$/.test(candidate) ? candidate : "";
+}
+
+// Cùng một video YouTube viết khác dạng link (youtu.be, watch?v=..., shorts) thì cùng một khóa.
 export function queueKey(mode: "file" | "link", source: string) {
   const value = source.trim();
-  if (mode === "link") return `link:${linkIn(value)}`;
+  if (mode === "link") {
+    const link = linkIn(value);
+    const id = youtubeId(link);
+    return id ? `link:youtube:${id}` : `link:${link}`;
+  }
   return `file:${value.replace(/\//g, "\\").replace(/\\+$/, "").toLowerCase()}`;
 }
 
@@ -56,9 +81,10 @@ export function queueLabel(mode: "file" | "link", source: string) {
 }
 
 // Bỏ video đang chạy và video đã có trong hàng. Giữ thứ tự thêm vào.
-export function appendJobs(queue: QueueJob[], incoming: QueueJob[], activeKey = "") {
+// Video đang chạy có thể có nhiều khóa: link gốc và file đã tải về từ link đó.
+export function appendJobs(queue: QueueJob[], incoming: QueueJob[], activeKey: string | string[] = "") {
   const seen = new Set(queue.map((item) => queueKey(item.mode, item.source)));
-  if (activeKey) seen.add(activeKey);
+  for (const key of Array.isArray(activeKey) ? activeKey : [activeKey]) if (key) seen.add(key);
   const added: QueueJob[] = [];
   let skipped = 0;
   for (const item of incoming) {

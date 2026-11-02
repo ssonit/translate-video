@@ -67,7 +67,13 @@ impl Job {
         if root.as_path() == video {
             return Err("Folder kết quả trùng file video.".into());
         }
-        require_same_source(&root, video)?;
+        require_same_source(&root, video).or_else(|error| {
+            if is_picture_of_link_job(&root, video, output_dir) {
+                Ok(())
+            } else {
+                Err(error)
+            }
+        })?;
         std::fs::create_dir_all(root.join("lines")).map_err(|error| error.to_string())?;
         let previous = read_json::<VideoSource>(&root.join("source.json")).unwrap_or_default();
         let picture = if is_picture_ext(&ext) {
@@ -112,20 +118,30 @@ impl Job {
         })
     }
 
-    // Tạo folder việc từ link, chưa có file hình. Giữ link đã lưu nếu mở lại cùng tên.
+    // Tạo folder việc từ link, chưa có file hình. Giữ link đã lưu nếu mở lại cùng tên:
+    // link của cùng video viết khác dạng cũng được, link đã lưu giữ nguyên.
+    // Folder của file Video đã tải từ chính link này (chưa lưu link) thì dùng lại.
     pub(crate) fn open_listen(output_dir: &Path, stem: &str, url: &str) -> Result<Self, String> {
         if !output_dir.is_dir() {
             return Err("Folder kết quả chưa có.".into());
         }
-        let stem = folder_name(Path::new(stem));
+        let stem = clean_folder_name(stem);
         let root = output_dir.join(&stem);
         let mut saved = read_json::<VideoSource>(&root.join("source.json")).unwrap_or_default();
-        if root.join("source.json").exists() && (saved.url != url || saved.url.is_empty()) {
+        let adopted = saved.url.is_empty() && downloaded_for(&saved, output_dir, &stem);
+        if root.join("source.json").exists()
+            && !adopted
+            && !crate::pipeline::same_video_link(&saved.url, url)
+        {
             return Err("Folder việc này thuộc nguồn khác. Chọn folder kết quả khác hoặc đổi tên nguồn mới.".into());
         }
         std::fs::create_dir_all(root.join("lines")).map_err(|error| error.to_string())?;
-        saved.url = url.to_string();
-        write_json(&root.join("source.json"), &saved)?;
+        // Nháp giữ nguồn bằng đường dẫn file. Gắn link vào thì nháp báo nguồn đã thay đổi.
+        // Nháp có link thì lấy link làm nguồn, đổi chữ trong link cũng làm nháp báo như vậy.
+        if saved.url.is_empty() && !(adopted && root.join("draft.json").exists()) {
+            saved.url = url.to_string();
+            write_json(&root.join("source.json"), &saved)?;
+        }
         Self::reopen(&root)
     }
 
@@ -401,22 +417,50 @@ fn require_same_source(root: &Path, video: &Path) -> Result<(), String> {
         return Ok(());
     }
     let saved: VideoSource = read_json(&path)?;
-    let normalize = |path: &Path| {
-        path.canonicalize()
-            .unwrap_or_else(|_| path.to_path_buf())
-            .to_string_lossy()
-            .trim_start_matches(r"\\?\")
-            .replace('/', "\\")
-            .to_lowercase()
-    };
-    let wanted = normalize(video);
+    let wanted = normal_path(video);
     if [&saved.video, &saved.picture]
         .iter()
-        .any(|source| !source.is_empty() && normalize(Path::new(source)) == wanted)
+        .any(|source| !source.is_empty() && normal_path(Path::new(source)) == wanted)
     {
         return Ok(());
     }
     Err("Folder kết quả đã có video khác cùng tên. Chọn folder kết quả khác hoặc đổi tên video mới.".into())
+}
+
+fn normal_path(path: &Path) -> String {
+    path.canonicalize()
+        .unwrap_or_else(|_| path.to_path_buf())
+        .to_string_lossy()
+        .trim_start_matches(r"\\?\")
+        .replace('/', "\\")
+        .to_lowercase()
+}
+
+fn in_download_dir(file: &Path, output_dir: &Path) -> bool {
+    file.parent()
+        .is_some_and(|dir| normal_path(dir) == normal_path(&output_dir.join("tai-ve")))
+}
+
+// File gốc đã lưu là file app tải về cho đúng tên này: nằm ngay trong tai-ve, tên khớp folder việc.
+fn downloaded_for(saved: &VideoSource, output_dir: &Path, stem: &str) -> bool {
+    let video = Path::new(&saved.video);
+    !saved.video.is_empty() && folder_name(video) == stem && in_download_dir(video, output_dir)
+}
+
+// Việc chỉ audio mang link mà chưa có hình. Video vừa tải về tai-ve cùng tên folder là hình của nó.
+fn is_picture_of_link_job(root: &Path, video: &Path, output_dir: &Path) -> bool {
+    let Ok(saved) = read_json::<VideoSource>(&root.join("source.json")) else {
+        return false;
+    };
+    let ext = video
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    !saved.url.is_empty()
+        && saved.picture.is_empty()
+        && is_picture_ext(&ext)
+        && in_download_dir(video, output_dir)
 }
 
 fn next_kept_slot(kept: &Path) -> PathBuf {
@@ -724,10 +768,11 @@ pub(crate) fn set_source_media(root: &Path, media: &Path) -> Result<(), String> 
 
 // Bind a newly opened download only after its exact media path has been checked.
 // Existing manifests retain their original locator and recovery contract.
+// A saved link of the same video written another way is accepted and stays as it is.
 pub(crate) fn bind_download_link(root: &Path, media: &Path, url: &str) -> Result<(), String> {
     let mut saved: VideoSource = read_json(&root.join("source.json"))?;
     require_same_source(root, media)?;
-    if !saved.url.is_empty() && saved.url != url { return Err("Folder việc đã gắn với link nguồn khác.".into()); }
+    if !saved.url.is_empty() && !crate::pipeline::same_video_link(&saved.url, url) { return Err("Folder việc đã gắn với link nguồn khác.".into()); }
     if saved.url.is_empty() && !root.join("draft.json").exists() {
         saved.url = url.into(); write_json(&root.join("source.json"), &saved)?;
     }
@@ -746,7 +791,13 @@ pub(crate) fn folder_name(video: &Path) -> String {
         .file_stem()
         .and_then(|value| value.to_str())
         .unwrap_or("video");
-    let mut name: String = stem
+    clean_folder_name(stem)
+}
+
+// Cho tên có sẵn, không phải đường dẫn file: đừng đưa qua Path::new, file_stem sẽ cắt ở dấu chấm
+// và dấu gạch ("Vol. 1 [id]" thành "Vol").
+pub(crate) fn clean_folder_name(name: &str) -> String {
+    let mut name: String = name
         .chars()
         .filter(|ch| !matches!(ch, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*'))
         .collect();
@@ -768,6 +819,15 @@ pub(crate) fn write_json(path: &Path, value: &impl Serialize) -> Result<(), Stri
     let text = serde_json::to_string_pretty(value).map_err(|error| error.to_string())?;
     crate::atomic_file::write(path, text.as_bytes())?;
     crate::draft::after_json(path)
+}
+
+// Ghi lại chỉ khi nội dung đổi, để file giữ nguyên giờ sửa và nháp không bị ghi theo.
+pub(crate) fn write_json_if_changed(path: &Path, value: &impl Serialize) -> Result<(), String> {
+    let text = serde_json::to_string_pretty(value).map_err(|error| error.to_string())?;
+    match std::fs::read(path) {
+        Ok(saved) if saved == text.as_bytes() => Ok(()),
+        _ => write_json(path, value),
+    }
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -1250,6 +1310,321 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    // Cùng một link, chạy Video rồi chạy Audio: file đã tải nằm trong tai-ve, folder việc dùng chung.
+    #[test]
+    fn a_listen_job_adopts_the_folder_of_the_video_downloaded_from_the_same_link() {
+        let dir = scratch("listen-after-video");
+        let output = dir.join("out");
+        let video = output.join("tai-ve").join("Talk [abcdefghijk].mp4");
+        fs::create_dir_all(video.parent().unwrap()).unwrap();
+        fs::write(&video, b"video").unwrap();
+        let first = Job::open(&video, &output).unwrap();
+        assert_eq!(source_url(&first.root), "");
+        let url = "https://youtu.be/abcdefghijk";
+        let listen = Job::open_listen(&output, "Talk [abcdefghijk]", url).unwrap();
+        assert_eq!(listen.root, first.root);
+        assert_eq!(listen.video, video);
+        assert_eq!(listen.picture, video);
+        assert_eq!(source_url(&listen.root), url);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // Folder đã có draft.json giữ nguồn bằng đường dẫn file. Gắn link vào sẽ làm nháp báo "nguồn đã thay đổi".
+    #[test]
+    fn a_listen_job_adopting_a_folder_with_a_draft_leaves_its_source_untouched() {
+        let dir = scratch("listen-after-draft");
+        let output = dir.join("out");
+        let video = output.join("tai-ve").join("Talk [abcdefghijk].mp4");
+        fs::create_dir_all(video.parent().unwrap()).unwrap();
+        fs::write(&video, b"video").unwrap();
+        let first = Job::open(&video, &output).unwrap();
+        write_json(
+            &first.settings_path(),
+            &crate::pipeline::RunSettings {
+                target: "vi".into(),
+                voice: "fixture".into(),
+                use_terms: false,
+                skip_translate: false,
+                text_only: true,
+            },
+        )
+        .unwrap();
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let source = crate::draft::inspect_source(&first, &cancel).unwrap();
+        let context = crate::draft::RunContext {
+            provider: "test-provider".into(),
+            model: "test-model".into(),
+            audio_only: false,
+        };
+        crate::draft::begin_text(&first, source, context, &cancel).unwrap();
+        let saved = fs::read(first.root.join("source.json")).unwrap();
+        let url = "https://youtu.be/abcdefghijk";
+        let listen = Job::open_listen(&output, "Talk [abcdefghijk]", url).unwrap();
+        assert_eq!(listen.root, first.root);
+        assert_eq!(fs::read(listen.root.join("source.json")).unwrap(), saved);
+        assert_eq!(source_url(&listen.root), "");
+        crate::draft::inspect_source(&listen, &cancel).unwrap();
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    const OTHER_SOURCE: &str =
+        "Folder việc này thuộc nguồn khác. Chọn folder kết quả khác hoặc đổi tên nguồn mới.";
+
+    #[test]
+    fn a_listen_job_still_refuses_the_folder_of_a_local_file_with_the_same_name() {
+        let dir = scratch("listen-local-same-name");
+        let output = dir.join("out");
+        fs::create_dir_all(&output).unwrap();
+        let local = dir.join("Talk [abcdefghijk].mp4");
+        fs::write(&local, b"my own recording").unwrap();
+        let first = Job::open(&local, &output).unwrap();
+        let saved = fs::read(first.root.join("source.json")).unwrap();
+        let error =
+            Job::open_listen(&output, "Talk [abcdefghijk]", "https://youtu.be/abcdefghijk")
+                .unwrap_err();
+        assert_eq!(error, OTHER_SOURCE);
+        assert_eq!(fs::read(first.root.join("source.json")).unwrap(), saved);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_listen_job_refuses_a_folder_whose_download_belongs_to_another_video() {
+        let dir = scratch("listen-other-download");
+        let output = dir.join("out");
+        let other = output.join("tai-ve").join("Other [zzzzzzzzzzz].mp4");
+        fs::create_dir_all(other.parent().unwrap()).unwrap();
+        fs::write(&other, b"video").unwrap();
+        let root = output.join("Talk [abcdefghijk]");
+        fs::create_dir_all(&root).unwrap();
+        set_source_media(&root, &other).unwrap();
+        let saved = fs::read(root.join("source.json")).unwrap();
+        let error =
+            Job::open_listen(&output, "Talk [abcdefghijk]", "https://youtu.be/abcdefghijk")
+                .unwrap_err();
+        assert_eq!(error, OTHER_SOURCE);
+        assert_eq!(fs::read(root.join("source.json")).unwrap(), saved);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // Cùng một video mà link dán lần sau viết khác dạng (youtu.be?si=, watch?v=&list=): vẫn là folder đó.
+    // Link đã lưu giữ nguyên, vì nháp lấy link làm nguồn.
+    #[test]
+    fn a_listen_job_accepts_the_same_video_written_as_another_link() {
+        let dir = scratch("listen-link-forms");
+        let output = dir.join("out");
+        fs::create_dir_all(&output).unwrap();
+        let saved_link = "https://youtu.be/abcdefghijk?si=AAA";
+        let first = Job::open_listen(&output, "Talk [abcdefghijk]", saved_link).unwrap();
+        let saved = fs::read(first.root.join("source.json")).unwrap();
+        for other in [
+            "https://www.youtube.com/watch?v=abcdefghijk",
+            "https://www.youtube.com/watch?v=abcdefghijk&list=WL&index=7",
+            "https://youtu.be/abcdefghijk",
+        ] {
+            let again = Job::open_listen(&output, "Talk [abcdefghijk]", other).unwrap();
+            assert_eq!(again.root, first.root, "{other}");
+            assert_eq!(fs::read(first.root.join("source.json")).unwrap(), saved, "{other}");
+        }
+        assert_eq!(source_url(&first.root), saved_link);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_listen_job_still_refuses_another_video_whatever_the_link_looks_like() {
+        let dir = scratch("listen-link-other-video");
+        let output = dir.join("out");
+        fs::create_dir_all(&output).unwrap();
+        let first =
+            Job::open_listen(&output, "Talk [abcdefghijk]", "https://youtu.be/abcdefghijk?si=AAA")
+                .unwrap();
+        let saved = fs::read(first.root.join("source.json")).unwrap();
+        for other in [
+            "https://youtu.be/abcdefghijz?si=AAA",
+            "https://www.youtube.com/watch?v=abcdefghijz&list=WL&index=7",
+            "https://www.youtube.com/watch?v=ABCDEFGHIJK",
+        ] {
+            let error = Job::open_listen(&output, "Talk [abcdefghijk]", other).unwrap_err();
+            assert_eq!(error, OTHER_SOURCE, "{other}");
+            assert_eq!(fs::read(first.root.join("source.json")).unwrap(), saved, "{other}");
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // Nháp lấy link đã lưu làm nguồn. Dán link dạng khác của cùng video mà đổi link đó là nháp báo "nguồn đã thay đổi".
+    #[test]
+    fn another_link_for_the_same_video_keeps_the_draft_source_valid() {
+        let dir = scratch("listen-link-forms-draft");
+        let output = dir.join("out");
+        fs::create_dir_all(&output).unwrap();
+        let first =
+            Job::open_listen(&output, "Talk [abcdefghijk]", "https://youtu.be/abcdefghijk?si=AAA")
+                .unwrap();
+        write_json(
+            &first.settings_path(),
+            &crate::pipeline::RunSettings {
+                target: "vi".into(),
+                voice: "fixture".into(),
+                use_terms: false,
+                skip_translate: false,
+                text_only: true,
+            },
+        )
+        .unwrap();
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let source = crate::draft::inspect_source(&first, &cancel).unwrap();
+        let context = crate::draft::RunContext {
+            provider: "test-provider".into(),
+            model: "test-model".into(),
+            audio_only: true,
+        };
+        crate::draft::begin_text(&first, source, context, &cancel).unwrap();
+        assert!(first.root.join("draft.json").is_file());
+        let again = Job::open_listen(
+            &output,
+            "Talk [abcdefghijk]",
+            "https://www.youtube.com/watch?v=abcdefghijk&list=WL",
+        )
+        .unwrap();
+        crate::draft::inspect_source(&again, &cancel).unwrap();
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // Tên video có dấu chấm ("Vol. 1", "Mr. Beast") không được bị cắt ở dấu chấm,
+    // kẻo hai video cùng phần đầu dùng chung một folder rồi báo "thuộc nguồn khác".
+    #[test]
+    fn listen_jobs_of_titles_with_dots_keep_their_own_folders() {
+        let dir = scratch("listen-dots");
+        let output = dir.join("out");
+        fs::create_dir_all(&output).unwrap();
+        let first = Job::open_listen(&output, "Vol. 1 Intro [aaaaaaaaaaa]", "https://youtu.be/aaaaaaaaaaa").unwrap();
+        let second = Job::open_listen(&output, "Vol. 2 Outro [bbbbbbbbbbb]", "https://youtu.be/bbbbbbbbbbb").unwrap();
+        assert_eq!(first.root, output.join("Vol. 1 Intro [aaaaaaaaaaa]"));
+        assert_eq!(second.root, output.join("Vol. 2 Outro [bbbbbbbbbbb]"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_listen_job_adopts_a_download_whose_title_has_dots() {
+        let dir = scratch("listen-dots-after-video");
+        let output = dir.join("out");
+        let video = output.join("tai-ve").join("Mr. Beast Video [abcdefghijk].mp4");
+        fs::create_dir_all(video.parent().unwrap()).unwrap();
+        fs::write(&video, b"video").unwrap();
+        let first = Job::open(&video, &output).unwrap();
+        assert_eq!(first.root, output.join("Mr. Beast Video [abcdefghijk]"));
+        let listen = Job::open_listen(&output, "Mr. Beast Video [abcdefghijk]", "https://youtu.be/abcdefghijk").unwrap();
+        assert_eq!(listen.root, first.root);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    const SAME_NAME: &str =
+        "Folder kết quả đã có video khác cùng tên. Chọn folder kết quả khác hoặc đổi tên video mới.";
+
+    // Chạy Audio trước, Video sau cùng link: video vừa tải về tai-ve là hình của việc đã mang link.
+    #[test]
+    fn a_video_download_adopts_the_folder_of_a_link_only_listen_job() {
+        let dir = scratch("video-after-listen");
+        let output = dir.join("out");
+        fs::create_dir_all(&output).unwrap();
+        let url = "https://youtu.be/abcdefghijk";
+        let listen = Job::open_listen(&output, "Talk [abcdefghijk]", url).unwrap();
+        let video = output.join("tai-ve").join("Talk [abcdefghijk].mp4");
+        fs::create_dir_all(video.parent().unwrap()).unwrap();
+        fs::write(&video, b"video").unwrap();
+        let job = Job::open(&video, &output).unwrap();
+        assert_eq!(job.root, listen.root);
+        assert_eq!(job.video, video);
+        assert_eq!(job.picture, video);
+        assert_eq!(source_url(&job.root), url);
+        assert_eq!(Job::reopen(&job.root).unwrap().video, video);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_video_download_takes_over_from_the_audio_a_listen_job_downloaded() {
+        let dir = scratch("video-after-listen-audio");
+        let output = dir.join("out");
+        fs::create_dir_all(&output).unwrap();
+        let url = "https://youtu.be/abcdefghijk";
+        let listen = Job::open_listen(&output, "Talk [abcdefghijk]", url).unwrap();
+        let audio = output.join("tai-ve").join("Talk [abcdefghijk].m4a");
+        fs::create_dir_all(audio.parent().unwrap()).unwrap();
+        fs::write(&audio, b"audio").unwrap();
+        set_source_media(&listen.root, &audio).unwrap();
+        let video = output.join("tai-ve").join("Talk [abcdefghijk].mp4");
+        fs::write(&video, b"video").unwrap();
+        let job = Job::open(&video, &output).unwrap();
+        assert_eq!(job.root, listen.root);
+        assert_eq!(Job::reopen(&job.root).unwrap().video, video);
+        assert_eq!(saved_picture(&job.root), Some(video));
+        assert_eq!(source_url(&job.root), url);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_local_video_with_the_name_of_a_link_job_is_still_refused() {
+        let dir = scratch("video-local-after-listen");
+        let output = dir.join("out");
+        fs::create_dir_all(&output).unwrap();
+        let listen = Job::open_listen(&output, "Talk [abcdefghijk]", "https://youtu.be/abcdefghijk").unwrap();
+        let local = dir.join("Talk [abcdefghijk].mp4");
+        fs::write(&local, b"my own recording").unwrap();
+        let saved = fs::read(listen.root.join("source.json")).unwrap();
+        assert_eq!(Job::open(&local, &output).unwrap_err(), SAME_NAME);
+        assert_eq!(fs::read(listen.root.join("source.json")).unwrap(), saved);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_link_job_that_already_has_a_picture_refuses_another_file() {
+        let dir = scratch("video-second-picture");
+        let output = dir.join("out");
+        fs::create_dir_all(&output).unwrap();
+        let listen = Job::open_listen(&output, "Talk [abcdefghijk]", "https://youtu.be/abcdefghijk").unwrap();
+        let first = output.join("tai-ve").join("Talk [abcdefghijk].mkv");
+        fs::create_dir_all(first.parent().unwrap()).unwrap();
+        fs::write(&first, b"first picture").unwrap();
+        set_source_picture(&listen.root, &first).unwrap();
+        let second = output.join("tai-ve").join("Talk [abcdefghijk].mp4");
+        fs::write(&second, b"second picture").unwrap();
+        let saved = fs::read(listen.root.join("source.json")).unwrap();
+        assert_eq!(Job::open(&second, &output).unwrap_err(), SAME_NAME);
+        assert_eq!(fs::read(listen.root.join("source.json")).unwrap(), saved);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_job_without_a_link_refuses_a_download_with_the_same_name() {
+        let dir = scratch("video-after-local-audio");
+        let output = dir.join("out");
+        fs::create_dir_all(&output).unwrap();
+        let local = dir.join("Talk [abcdefghijk].m4a");
+        fs::write(&local, b"my own audio").unwrap();
+        let first = Job::open(&local, &output).unwrap();
+        let video = output.join("tai-ve").join("Talk [abcdefghijk].mp4");
+        fs::create_dir_all(video.parent().unwrap()).unwrap();
+        fs::write(&video, b"video").unwrap();
+        let saved = fs::read(first.root.join("source.json")).unwrap();
+        assert_eq!(Job::open(&video, &output).unwrap_err(), SAME_NAME);
+        assert_eq!(fs::read(first.root.join("source.json")).unwrap(), saved);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_link_job_refuses_a_download_that_is_not_a_picture() {
+        let dir = scratch("video-not-a-picture");
+        let output = dir.join("out");
+        fs::create_dir_all(&output).unwrap();
+        let listen = Job::open_listen(&output, "Talk [abcdefghijk]", "https://youtu.be/abcdefghijk").unwrap();
+        let other = output.join("tai-ve").join("Talk [abcdefghijk].mp3");
+        fs::create_dir_all(other.parent().unwrap()).unwrap();
+        fs::write(&other, b"another audio").unwrap();
+        let saved = fs::read(listen.root.join("source.json")).unwrap();
+        assert_eq!(Job::open(&other, &output).unwrap_err(), SAME_NAME);
+        assert_eq!(fs::read(listen.root.join("source.json")).unwrap(), saved);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn a_verified_download_link_can_be_bound_without_reusing_another_source() {
         let dir = scratch("bind-link"); let out = dir.join("out");
@@ -1260,6 +1635,53 @@ mod tests {
         assert_eq!(source_url(&job.root),"https://youtu.be/abc");
         assert!(bind_download_link(&job.root,&source,"https://youtu.be/other").is_err());
         assert_eq!(source_url(&job.root),"https://youtu.be/abc"); let _=fs::remove_dir_all(dir);
+    }
+
+    // Việc Audio đã lưu link dạng youtu.be?si=. Chạy Video với link watch?v=&list= của cùng video: gắn được,
+    // link đã lưu giữ nguyên. Link của video khác vẫn bị từ chối.
+    fn audio_job_then_its_video(name: &str) -> (PathBuf, PathBuf, Job) {
+        let dir = scratch(name);
+        let output = dir.join("out");
+        let video = output.join("tai-ve").join("Talk [abcdefghijk].mp4");
+        fs::create_dir_all(video.parent().unwrap()).unwrap();
+        fs::write(&video, b"video").unwrap();
+        let listen =
+            Job::open_listen(&output, "Talk [abcdefghijk]", "https://youtu.be/abcdefghijk?si=AAA")
+                .unwrap();
+        let job = Job::open(&video, &output).unwrap();
+        assert_eq!(job.root, listen.root);
+        (dir, video, job)
+    }
+
+    #[test]
+    fn a_download_link_of_the_same_video_in_another_form_can_be_bound() {
+        let (dir, video, job) = audio_job_then_its_video("bind-link-forms");
+        let saved = fs::read(job.root.join("source.json")).unwrap();
+        bind_download_link(
+            &job.root,
+            &video,
+            "https://www.youtube.com/watch?v=abcdefghijk&list=WL&index=7",
+        )
+        .unwrap();
+        assert_eq!(fs::read(job.root.join("source.json")).unwrap(), saved);
+        assert_eq!(source_url(&job.root), "https://youtu.be/abcdefghijk?si=AAA");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_download_link_of_another_video_is_still_refused_whatever_it_looks_like() {
+        let (dir, video, job) = audio_job_then_its_video("bind-link-other-video");
+        let saved = fs::read(job.root.join("source.json")).unwrap();
+        for other in [
+            "https://youtu.be/abcdefghijz?si=AAA",
+            "https://www.youtube.com/watch?v=abcdefghijz&list=WL&index=7",
+            "https://www.youtube.com/watch?v=ABCDEFGHIJK",
+        ] {
+            let error = bind_download_link(&job.root, &video, other).unwrap_err();
+            assert_eq!(error, "Folder việc đã gắn với link nguồn khác.", "{other}");
+            assert_eq!(fs::read(job.root.join("source.json")).unwrap(), saved, "{other}");
+        }
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]

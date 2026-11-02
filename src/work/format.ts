@@ -64,6 +64,11 @@ export function freshSteps(audioOnly = false, textOnly = false): StepView[] {
   }));
 }
 
+// Người dùng bấm Dừng thì Rust vẫn báo bước đang chạy là "error", lý do "Đã dừng.". Đó không phải lỗi.
+export function stepStateOf(state: string, detail: string) {
+  return state === "error" && detail === "Đã dừng." ? "stopped" : state;
+}
+
 export function stepFraction(step: StepView) {
   if (step.state === "done") return 1;
   if (step.state === "running") return step.progress ?? 0;
@@ -78,7 +83,10 @@ export function workflowPhases(steps: StepView[], waitingForNames = false) {
     { id: "merge", label: "Xuất kết quả", ids: ["merge"] },
   ].map((phase) => {
     const children = steps.filter((step) => phase.ids.includes(step.id));
-    const active = children.find((step) => step.state === "error") ?? children.find((step) => step.state === "running");
+    const active =
+      children.find((step) => step.state === "error") ??
+      children.find((step) => step.state === "stopped") ??
+      children.find((step) => step.state === "running");
     const state = phase.id === "names" && waitingForNames ? "waiting"
       : active?.state ?? (children.some((step) => step.state === "pending") ? "pending" : "done");
     return { id: phase.id, label: phase.label, state };
@@ -99,7 +107,10 @@ export function overallEstimate(steps: StepView[], startedAt: number | null, now
   const done = active.reduce((sum, step) => sum + step.weight * stepFraction(step), 0);
   const fraction = total > 0 ? done / total : 0;
   const elapsed = startedAt === null ? 0 : Math.max(0, ((pause.sinceMs ?? now) - startedAt - pause.pausedMs) / 1000);
-  const remaining = pause.sinceMs === null && done > 0 && elapsed >= 5 ? ((total - done) * elapsed) / done : null;
+  // Một bước đang chạy mà chưa đo được tiến độ thì chưa biết nó nặng cỡ nào. Lấy các bước đã xong
+  // để nhân lên thì số giây tăng theo từng giây bước đó chạy, nên chưa hứa gì cho tới khi đo được.
+  const unmeasured = active.some((step) => step.state === "running" && (step.progress ?? 0) < 0.03);
+  const remaining = pause.sinceMs === null && done > 0 && elapsed >= 5 && !unmeasured ? ((total - done) * elapsed) / done : null;
   return { fraction, elapsed, remaining };
 }
 
@@ -115,6 +126,13 @@ export function duration(seconds: number) {
 export function remainingText(seconds: number | null) {
   if (seconds === null) return "";
   return seconds < 10 ? "sắp xong" : `còn khoảng ${duration(seconds)}`;
+}
+
+// Chữ ghi lên hình sẽ đè lên chữ cứng có sẵn của video gốc. Chỉ nhắc khi đúng vậy và vùng che đang tắt.
+export function maskHintShown(options: { audioOnly: boolean; textOnly: boolean; burnCaptions: boolean; maskOn: boolean }) {
+  if (options.maskOn) return false;
+  if (options.textOnly) return true;
+  return !options.audioOnly && options.burnCaptions;
 }
 
 export function fileName(path: string) {
@@ -268,6 +286,11 @@ export function openJobFolder(path: string) {
   return parentFolder(isAudio(path) ? path : plainVideo(path));
 }
 
+// Thông báo xong việc tự biến mất. Lỗi thì ở lại tới khi người dùng đóng, vì cần được đọc.
+export function noticeFades(notice: string, busy: boolean, error: string) {
+  return notice !== "" && !busy && (error === "" || error === "Đã dừng.");
+}
+
 export function errorText(caught: unknown) {
   if (typeof caught === "string") return caught;
   if (caught && typeof caught === "object" && "message" in caught && typeof caught.message === "string") {
@@ -301,5 +324,6 @@ export function markText(state: string) {
   if (state === "skipped") return "Bỏ qua";
   if (state === "running") return "Đang chạy";
   if (state === "error") return "Lỗi";
+  if (state === "stopped") return "Đã dừng";
   return "Chờ";
 }

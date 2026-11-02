@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { chipLabel, firstGap, lockNote, markFor, summarize, type ToolStatus } from "./setupStatus.ts";
+import { chipLabel, firstGap, lockNote, markFor, serverLine, summarize, type ToolStatus } from "./setupStatus.ts";
 
 const ok = (id: ToolStatus["id"]): ToolStatus => ({ id, ready: true, detail: "" });
 const gap = (id: ToolStatus["id"]): ToolStatus => ({ id, ready: false, detail: "" });
@@ -74,4 +74,11 @@ test("a row with a result says present, missing or optional", () => {
   assert.deepEqual(markFor(ok("ffmpeg"), false, false), { text: "Có", tone: "ready" });
   assert.deepEqual(markFor(gap("whisper"), false, false), { text: "Thiếu", tone: "bad" });
   assert.deepEqual(markFor(gap("ytdlp"), true, false), { text: "Tùy chọn", tone: "bad" });
+});
+
+test("the DeepSeek server line follows the click instead of the old state", () => {
+  assert.equal(serverLine(false, ""), "Server chưa chạy");
+  assert.equal(serverLine(true, ""), "Server đang chạy");
+  assert.equal(serverLine(false, "start"), "Đang bật server…");
+  assert.equal(serverLine(true, "stop"), "Đang tắt server…");
 });

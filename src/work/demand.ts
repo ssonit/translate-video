@@ -111,3 +111,16 @@ export function splitText(text: string, fraction: number): [string, string] {
   const cut = Math.max(1, Math.min(words.length - 1, Math.round(words.length * fraction)));
   return [words.slice(0, cut).join(" "), words.slice(cut).join(" ")];
 }
+
+// Vì sao nút Hoàn tác đang tắt, hoặc nó làm gì khi bật. Gắn thẳng vào nút và dòng chú thích.
+export function undoHint(canUndo: boolean, dirty: boolean): string {
+  if (!canUndo) return "Chưa có lần lưu hay tách/gộp câu nào để hoàn tác.";
+  if (dirty) return "Còn thay đổi chưa lưu. Lưu hoặc bỏ thay đổi trước, rồi mới hoàn tác được lần lưu trước đó.";
+  return "Hoàn tác lần lưu hoặc tách/gộp câu gần nhất.";
+}
+
+// Số giây hiển thị trong ô Từ/Đến: bỏ phần dư của phép tính số thực (3.3600000000000003 thành 3.36), giữ nguyên số người dùng gõ.
+export function secondsText(seconds: number): number {
+  const rounded = Math.round(seconds * 1000) / 1000;
+  return Math.abs(seconds - rounded) < 1e-9 ? rounded : seconds;
+}

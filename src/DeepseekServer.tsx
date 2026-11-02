@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { serverLine } from "./setupStatus";
 
 // Server Deepseek-API (DeepSeek local). Màn chuẩn bị và ô "Dịch bằng" cùng dùng chỗ này.
 // active: chỉ hỏi server khi đang chọn DeepSeek local. refresh: đổi giá trị thì hỏi lại ngay.
 export function useDeepseekServer(active: boolean, refresh?: unknown) {
   const [up, setUp] = useState(false);
   const [busy, setBusy] = useState(false);
+  // Đang bật hay đang tắt, để dòng trạng thái không giữ chữ cũ trong lúc chờ.
+  const [going, setGoing] = useState<"" | "start" | "stop">("");
   const [note, setNote] = useState("");
 
   const poll = useCallback(async () => {
@@ -44,6 +47,7 @@ export function useDeepseekServer(active: boolean, refresh?: unknown) {
   const toggle = useCallback(
     async (after?: () => Promise<void> | void) => {
       setNote("");
+      setGoing(up ? "stop" : "start");
       setBusy(true);
       try {
         if (up) {
@@ -59,12 +63,13 @@ export function useDeepseekServer(active: boolean, refresh?: unknown) {
         await poll();
       } finally {
         setBusy(false);
+        setGoing("");
       }
     },
     [up, poll],
   );
 
-  return { up, busy, note, toggle };
+  return { up, busy, going, note, toggle };
 }
 
 export function DeepseekServerRow({
@@ -82,7 +87,7 @@ export function DeepseekServerRow({
     <>
       <div className="command install-row">
         <div>
-          <strong>{server.up ? "Server đang chạy" : "Server chưa chạy"}</strong>
+          <strong>{serverLine(server.up, server.going)}</strong>
           <p>
             Bật thì chạy Deepseek-API tại http://127.0.0.1:8000. Tắt thì dừng process cổng đó. App không tự bật lại.
           </p>

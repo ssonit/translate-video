@@ -1579,6 +1579,12 @@ fn default_output_dir() -> Result<String, String> {
         .to_string())
 }
 
+// Báo link dán vào có dùng được không, bằng đúng luật lúc tải. Chỉ đọc chữ, không mở mạng.
+#[tauri::command]
+fn check_link(url: String) -> Result<(), String> {
+    pipeline::video_url(&url).map(|_| ())
+}
+
 #[tauri::command]
 async fn link_title(url: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || pipeline::link_title(&url))
@@ -2313,6 +2319,7 @@ pub fn run() {
             confirm_names,
             read_names,
             save_names,
+            check_link,
             link_title,
             download_video,
             prepare_listen,
@@ -2384,6 +2391,18 @@ pub fn run() {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn the_link_box_is_checked_by_the_same_rule_the_download_uses() {
+        assert!(check_link("https://youtu.be/jNQXAC9IVRw".into()).is_ok());
+        assert!(check_link("2.56 07/31 GiC:/ 【漂泊监狱】 https://v.douyin.com/9F1g72OKQWY/ 复制此链接".into()).is_ok());
+        let other_site = check_link("https://example.com/video".into()).unwrap_err();
+        assert!(other_site.contains("Chỉ nhận link YouTube"), "{other_site}");
+        let playlist = check_link("https://www.youtube.com/playlist?list=PL123".into()).unwrap_err();
+        assert!(playlist.contains("không nhận playlist"), "{playlist}");
+        assert!(check_link("không phải link".into()).is_err());
+        assert!(check_link("  ".into()).is_err());
+    }
 
     #[test]
     fn queued_service_and_model_resolve_without_changing_the_active_choice() {

@@ -59,3 +59,10 @@ export function markFor(
   if (status.ready) return { text: "Có", tone: "ready" };
   return { text: optional ? "Tùy chọn" : "Thiếu", tone: "bad" };
 }
+
+// Dòng trạng thái server DeepSeek local. Đang bật hay tắt thì nói đang làm gì, đừng giữ trạng thái cũ.
+export function serverLine(up: boolean, going: "" | "start" | "stop"): string {
+  if (going === "start") return "Đang bật server…";
+  if (going === "stop") return "Đang tắt server…";
+  return up ? "Server đang chạy" : "Server chưa chạy";
+}

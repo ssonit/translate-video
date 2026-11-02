@@ -4,7 +4,8 @@ import { listen } from "@tauri-apps/api/event";
 import { queueKey, readSavedQueue, writeSavedQueue, type QueueJob } from "../queue";
 import { previewStillOpen } from "../watchPlay";
 import type { WatchUpdate } from "../WatchLive";
-import { errorText, isAudio } from "./format";
+import { errorText, isAudio, stepStateOf } from "./format";
+import { linkProblem } from "./linkCheck";
 import type { Session } from "./state";
 import { watchDataKey, watchMediaKey } from "./watchLoad";
 import type { DubStatus, FinishedDub, KeptVersion, NamesPending, Prefs, Progress, ScriptLine, RunPause } from "./types";
@@ -201,6 +202,24 @@ export function useWorkEffects(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [s.target]);
 
+  // Kiểm tra link khi người dùng dừng gõ hoặc vừa dán xong. Đổi chữ thì lý do cũ biến mất ngay.
+  useEffect(() => {
+    s.setLinkError("");
+    const link = s.composeLink.trim();
+    if (!link) return;
+    let current = true;
+    const timer = window.setTimeout(() => {
+      void linkProblem(link).then((problem) => {
+        if (current) s.setLinkError(problem);
+      });
+    }, 500);
+    return () => {
+      current = false;
+      window.clearTimeout(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [s.composeLink]);
+
   useEffect(() => {
     if (!s.againOpen) return;
     let current = true;
@@ -246,7 +265,7 @@ export function useWorkEffects(
             ? {
                 ...step,
                 label: next.label || step.label,
-                state: next.state,
+                state: stepStateOf(next.state, next.detail),
                 detail: next.detail,
                 // A message without a fraction keeps the last known one while the step is still running.
                 progress: next.state === "running" ? (next.progress ?? step.progress) : null,
