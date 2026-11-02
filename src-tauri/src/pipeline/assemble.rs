@@ -18,7 +18,9 @@ use crate::wav::{
 
 use super::download::{lines_end, timeline_secs, DownloadEvent};
 use super::fit_batch::{FitBatch, FIT_BATCH_LINES};
-use super::media::{drop_fit_wavs, media_duration, release_mix, run_ffmpeg_progress, write_srt};
+use super::media::{
+    drop_fit_wavs, media_duration, parse_clock, release_mix, run_ffmpeg_progress, write_srt,
+};
 use super::retake::open_finished;
 use super::{report, report_named, report_named_progress, report_progress, require_tool, stopped};
 
@@ -443,15 +445,67 @@ fn listen_cues(job: &Job) -> Result<Vec<TranslatedLine>, String> {
     Ok(cues)
 }
 
-// Lời trên màn nghe liền mạch lấy mốc của audio nối, không lấy mốc hình.
+// Các cặp (bắt đầu, kết thúc) trong file .srt, theo thứ tự khối. Một khối không đọc được thì bỏ cả file.
+fn srt_spans(text: &str) -> Option<Vec<(f64, f64)>> {
+    let text = text.replace("\r\n", "\n").replace('\r', "\n");
+    let mut spans = Vec::new();
+    for block in text.split("\n\n").filter(|block| !block.trim().is_empty()) {
+        let clock = block.lines().find(|line| line.contains("-->"))?;
+        let (start, end) = clock.split_once("-->")?;
+        let (start, end) = (parse_clock(start)?, parse_clock(end)?);
+        if !(start.is_finite() && end.is_finite() && start >= 0.0) {
+            return None;
+        }
+        spans.push((start, end.max(start)));
+    }
+    Some(spans)
+}
+
+// Audio một mạch: .srt cạnh file .m4a ghi chỗ mỗi câu nằm trong audio. Chỉ câu có chữ dịch mới có khối ở đó.
+// Câu không có chữ đứng yên ở chỗ câu trước vừa hết, để mốc không nhảy ngược.
+fn story_cues(result: &Path, saved: &[TranslatedLine]) -> Option<Vec<TranslatedLine>> {
+    if read_fit_mode(result.parent()?) != FIT_STORY {
+        return None;
+    }
+    let spans = srt_spans(&std::fs::read_to_string(result.with_extension("srt")).ok()?)?;
+    let has_text = |line: &TranslatedLine| !line.translation.trim().is_empty();
+    if spans.len() != saved.iter().filter(|line| has_text(line)).count() {
+        return None;
+    }
+    let mut spans = spans.into_iter();
+    let mut at = 0.0;
+    Some(
+        saved
+            .iter()
+            .map(|line| {
+                let (start, end) = if has_text(line) {
+                    spans.next().unwrap_or((at, at))
+                } else {
+                    (at, at)
+                };
+                at = end;
+                TranslatedLine {
+                    start,
+                    end,
+                    ..line.clone()
+                }
+            })
+            .collect(),
+    )
+}
+
+// Lời trên màn kết quả audio lấy mốc của file audio, không lấy mốc hình.
 pub(crate) fn script_for(result: &Path) -> Result<Vec<TranslatedLine>, String> {
     let saved = crate::job::read_script(result)?;
-    if !is_listen_audio(result) {
-        return Ok(saved);
+    if is_listen_audio(result) {
+        let root = result.parent().ok_or("Chưa thấy folder việc.")?;
+        let job = Job::reopen(root)?;
+        return Ok(listen_cues(&job).unwrap_or(saved));
     }
-    let root = result.parent().ok_or("Chưa thấy folder việc.")?;
-    let job = Job::reopen(root)?;
-    Ok(listen_cues(&job).unwrap_or(saved))
+    if is_m4a(result) {
+        return Ok(story_cues(result, &saved).unwrap_or(saved));
+    }
+    Ok(saved)
 }
 
 // Video đã ghép: đọc từng đoạn một lần, ghi file nghe. Không tải lại, không dịch lại.
@@ -1827,6 +1881,176 @@ mod tests {
             "mốc nghe {}",
             on_listen[1].start
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn said(start: f64, end: f64, translation: &str) -> TranslatedLine {
+        TranslatedLine {
+            start,
+            end,
+            source: format!("src {translation}"),
+            translation: translation.into(),
+        }
+    }
+
+    // Folder audio: lời đã lưu theo mốc video, .srt cạnh file .m4a theo mốc audio.
+    fn audio_job(name: &str, fit_mode: &str, saved: &[TranslatedLine]) -> (PathBuf, Job) {
+        let (dir, job) = text_job(name);
+        write_json(&job.translation_path(), &saved).unwrap();
+        std::fs::write(job.spoken(), b"audio").unwrap();
+        std::fs::write(fit_mode_path(&job.root), fit_mode).unwrap();
+        (dir, job)
+    }
+
+    fn millis(lines: &[TranslatedLine]) -> Vec<(i64, i64)> {
+        lines
+            .iter()
+            .map(|line| {
+                (
+                    (line.start * 1000.0).round() as i64,
+                    (line.end * 1000.0).round() as i64,
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_story_audio_result_shows_the_times_of_the_audio_not_of_the_video() {
+        let saved = vec![
+            said(10.0, 14.0, "Một"),
+            said(30.0, 33.0, "Hai"),
+            said(55.0, 60.0, "Ba"),
+        ];
+        let (dir, job) = audio_job("story-script", FIT_STORY, &saved);
+        let on_audio = [
+            said(0.0, 2.0, "Một"),
+            said(2.4, 5.0, "Hai"),
+            said(5.4, 8.0, "Ba"),
+        ];
+        write_srt(&job.subtitles(), &on_audio).unwrap();
+
+        let shown = script_for(&job.spoken()).unwrap();
+
+        assert_eq!(
+            millis(&shown),
+            [(0, 2000), (2400, 5000), (5400, 8000)],
+            "mốc phải theo file audio, không theo video"
+        );
+        assert_eq!(shown[1].translation, "Hai");
+        assert_eq!(shown[1].source, "src Hai");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_line_with_no_text_has_no_cue_and_waits_where_the_last_one_ended() {
+        let saved = vec![
+            said(10.0, 14.0, "Một"),
+            said(20.0, 22.0, "  "),
+            said(30.0, 33.0, "Ba"),
+        ];
+        let (dir, job) = audio_job("story-script-empty", FIT_STORY, &saved);
+        // write_srt bỏ câu chỉ có khoảng trắng, nên .srt chỉ có hai khối.
+        let on_audio = [
+            said(0.0, 2.0, "Một"),
+            said(2.0, 2.0, "  "),
+            said(2.4, 5.0, "Ba"),
+        ];
+        write_srt(&job.subtitles(), &on_audio).unwrap();
+
+        let shown = script_for(&job.spoken()).unwrap();
+
+        assert_eq!(millis(&shown), [(0, 2000), (2000, 2000), (2400, 5000)]);
+        assert_eq!(shown[1].translation, "  ");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_audio_result_laid_to_the_picture_keeps_the_times_of_the_video() {
+        let saved = vec![said(10.0, 14.0, "Một"), said(30.0, 33.0, "Hai")];
+        for fit_mode in [FIT_SYNC, ""] {
+            let (dir, job) = audio_job("sync-script", fit_mode, &saved);
+            write_srt(
+                &job.subtitles(),
+                &[said(0.0, 2.0, "Một"), said(2.4, 5.0, "Hai")],
+            )
+            .unwrap();
+
+            let shown = script_for(&job.spoken()).unwrap();
+
+            assert_eq!(millis(&shown), [(10_000, 14_000), (30_000, 33_000)]);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn a_story_audio_result_keeps_the_saved_times_when_the_srt_cannot_be_trusted() {
+        let saved = vec![said(10.0, 14.0, "Một"), said(30.0, 33.0, "Hai")];
+        let (dir, job) = audio_job("story-script-bad-srt", FIT_STORY, &saved);
+        let shown = || millis(&script_for(&job.spoken()).unwrap());
+        let on_video = [(10_000, 14_000), (30_000, 33_000)];
+
+        assert_eq!(shown(), on_video, "chưa có .srt");
+        write_srt(&job.subtitles(), &[said(0.0, 2.0, "Một")]).unwrap();
+        assert_eq!(shown(), on_video, "thiếu một khối");
+        let three = [
+            said(0.0, 2.0, "Một"),
+            said(2.4, 5.0, "Hai"),
+            said(5.4, 8.0, "Ba"),
+        ];
+        write_srt(&job.subtitles(), &three).unwrap();
+        assert_eq!(shown(), on_video, "thừa một khối");
+        std::fs::write(job.subtitles(), "1\nkhông có mốc\nMột\n\n2\nkhông có mốc\nHai\n").unwrap();
+        assert_eq!(shown(), on_video, "khối không có dòng mốc");
+        std::fs::write(
+            job.subtitles(),
+            "1\n00:00:00,000 --> 00:00:02,000\nMột\n\n2\n00:00:xx,400 --> 00:00:05,000\nHai\n",
+        )
+        .unwrap();
+        assert_eq!(shown(), on_video, "mốc hỏng");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn srt_spans_take_the_clock_line_of_every_block_whatever_the_text_says() {
+        // BOM đầu file, xuống dòng kiểu Windows, chữ phụ đề có cả "-->", mốc kết thúc nhỏ hơn mốc bắt đầu.
+        let text = "\u{feff}1\r\n00:00:01,000 --> 00:00:02,500\r\nXin chào\r\n\r\n\
+                    2\r\n00:01:03,250 --> 00:01:04,000\r\nA --> B\r\n\r\n\
+                    3\r\n00:01:10,000 --> 00:01:08,000\r\nC\r\n\r\n";
+        assert_eq!(
+            srt_spans(text),
+            Some(vec![(1.0, 2.5), (63.25, 64.0), (70.0, 70.0)])
+        );
+        assert_eq!(srt_spans(""), Some(Vec::new()));
+    }
+
+    #[test]
+    fn srt_spans_refuse_a_file_with_one_block_that_cannot_be_read() {
+        let first = "1\n00:00:01,000 --> 00:00:02,000\nA\n\n";
+        for broken in [
+            "2\nkhông có dòng mốc\nB\n",
+            "2\n00:00:xx,000 --> 00:00:03,000\nB\n",
+            "2\n00:00:nan,000 --> 00:00:03,000\nB\n",
+            "2\n00:00:03,000 --> 00:00:inf,000\nB\n",
+            "2\n00:00:-1,000 --> 00:00:03,000\nB\n",
+        ] {
+            assert_eq!(srt_spans(&format!("{first}{broken}")), None, "{broken}");
+        }
+    }
+
+    #[test]
+    fn only_the_audio_file_takes_the_times_of_the_srt() {
+        let saved = vec![said(10.0, 14.0, "Một"), said(30.0, 33.0, "Hai")];
+        let (dir, job) = audio_job("story-script-video", FIT_STORY, &saved);
+        write_srt(
+            &job.subtitles(),
+            &[said(0.0, 2.0, "Một"), said(2.4, 5.0, "Hai")],
+        )
+        .unwrap();
+        std::fs::write(job.result(), b"video").unwrap();
+
+        let on_video = script_for(&job.result()).unwrap();
+
+        assert_eq!(millis(&on_video), [(10_000, 14_000), (30_000, 33_000)]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
