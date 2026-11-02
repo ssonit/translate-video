@@ -936,9 +936,10 @@ fn clean_caption(text: &str) -> String {
         .replace("&nbsp;", " ");
     let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
     let lower = text.to_ascii_lowercase();
+    // Chữ giữ chỗ của phụ đề tự động, không phải lời nói. "foreign" là cách YouTube ghi đoạn nó không nhận ra.
     if matches!(
         lower.as_str(),
-        "[music]" | "[applause]" | "[laughter]" | "[âm nhạc]" | "♪" | "♫"
+        "[music]" | "[applause]" | "[laughter]" | "[âm nhạc]" | "♪" | "♫" | "foreign" | "[foreign]"
     ) {
         return String::new();
     }
@@ -1866,6 +1867,42 @@ mod tests {
         let cues = cues_from_subtitle(vtt, "vtt").unwrap();
         assert_eq!(cues.len(), 1);
         assert_eq!(cues[0].text, "Hello & there");
+    }
+
+    // Phụ đề tự động của YouTube ghi chữ "foreign" cho đoạn nó không nhận ra (như phần mở đầu nói tiếng khác). Đó là
+    // chỗ giữ chỗ, không phải lời: giữ lại thì bước dịch và đọc sẽ đọc "nước ngoài" suốt đoạn đó. Bốn sự kiện dưới
+    // đây lấy nguyên từ file json3 thật của một video tiếng Anh.
+    #[test]
+    fn the_placeholder_for_speech_youtube_could_not_make_out_is_not_a_cue() {
+        let text = r#"{"events":[
+            {"tStartMs":0,"dDurationMs":82609,"id":1,"wpWinPosId":1,"wsWinStyleId":1},
+            {"tStartMs":0,"dDurationMs":4860,"wWinId":1,"segs":[{"utf8":"foreign","acAsrConf":237}]},
+            {"tStartMs":2649,"dDurationMs":2211,"wWinId":1,"aAppend":1,"segs":[{"utf8":"\n"}]},
+            {"tStartMs":2659,"dDurationMs":4120,"wWinId":1,"segs":[{"utf8":"do","acAsrConf":202},{"utf8":" you","tOffsetMs":1000,"acAsrConf":246},{"utf8":" like","tOffsetMs":1061,"acAsrConf":248}]}
+        ]}"#;
+        let cues = cues_from_subtitle(text, "json3").unwrap();
+        assert_eq!(cues.len(), 1);
+        assert_eq!(cues[0].text, "do you like");
+        assert!((cues[0].start - 2.659).abs() < 0.001);
+    }
+
+    #[test]
+    fn the_placeholder_is_dropped_in_any_case_with_or_without_brackets() {
+        for tag in ["foreign", "Foreign", "[Foreign]", "[foreign]", "  [FOREIGN] "] {
+            let srt = format!("1\n00:00:00,000 --> 00:00:04,000\n{tag}\n\n2\n00:00:04,500 --> 00:00:06,000\nHello\n");
+            let cues = cues_from_subtitle(&srt, "srt").unwrap();
+            assert_eq!(cues.len(), 1, "{tag:?}");
+            assert_eq!(cues[0].text, "Hello", "{tag:?}");
+        }
+    }
+
+    // Chỉ cả cue là chữ giữ chỗ mới bị bỏ. Chữ "foreign" nằm trong lời nói thật thì giữ.
+    #[test]
+    fn the_word_foreign_inside_real_speech_is_kept() {
+        let srt = "1\n00:00:01,000 --> 00:00:02,000\nA foreign language\n\n2\n00:00:03,000 --> 00:00:04,000\nforeign policy\n";
+        let cues = cues_from_subtitle(srt, "srt").unwrap();
+        let texts: Vec<&str> = cues.iter().map(|cue| cue.text.as_str()).collect();
+        assert_eq!(texts, ["A foreign language", "foreign policy"]);
     }
 
     #[test]
