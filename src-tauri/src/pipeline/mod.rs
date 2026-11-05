@@ -7,6 +7,7 @@ pub(crate) use captions::review as review_captions;
 mod download;
 mod fit_batch;
 mod media;
+mod mp4_complete;
 mod overlap;
 mod retake;
 mod source_captions;

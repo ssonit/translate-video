@@ -17,6 +17,7 @@ use crate::job::{
 use super::media::{
     media_duration, parse_clock, run_tool, run_tool_with, settle_transcript, LineSplitter,
 };
+use super::mp4_complete::mp4_complete;
 use super::{require_tool, stopped};
 
 // Accepts one YouTube, Douyin, or TikTok video link. A pasted string can never become a yt-dlp option or another site.
@@ -224,34 +225,55 @@ fn download_douyin(
     }
     let mut command = Command::new(python);
     command.arg(&script).arg(url).arg(dir);
-    download_report(app, "Đang mở Edge để hỏi Douyin về video.", None);
-    let mut lines = LineSplitter::default();
-    let stdout = run_tool_with(
-        command,
-        Duration::from_secs(2 * 60 * 60),
-        cancel,
-        &mut |_, text| {
-            for line in lines.push(text) {
-                let Some(update) = ytdlp_progress(&line) else {
-                    continue;
-                };
-                if update.finished {
-                    download_report(app, "Đã tải xong video.", None);
-                    continue;
+    // Douyin chặn thì nghỉ, kể cả khi hàng đợi để "tiếp tục khi lỗi": các video sau không được hỏi dồn.
+    let pause_file = app
+        .path()
+        .app_data_dir()
+        .ok()
+        .map(|dir| crate::douyin_pause::file_in(&dir));
+    douyin_result(pause_file.as_deref(), crate::now_ms(), || {
+        download_report(app, "Đang mở Edge để hỏi Douyin về video.", None);
+        let mut lines = LineSplitter::default();
+        run_tool_with(
+            command,
+            Duration::from_secs(2 * 60 * 60),
+            cancel,
+            &mut |_, text| {
+                for line in lines.push(text) {
+                    let Some(update) = ytdlp_progress(&line) else {
+                        continue;
+                    };
+                    if update.finished {
+                        download_report(app, "Đã tải xong video.", None);
+                        continue;
+                    }
+                    download_report(app, &update.detail("video"), update.fraction());
                 }
-                download_report(app, &update.detail("video"), update.fraction());
-            }
-        },
-    )?;
+            },
+        )
+    })
+}
+
+// Một lần tải Douyin: chạy fetch.py (hoặc không chạy nếu đang nghỉ), rồi lấy đường dẫn file đủ từ stdout.
+fn douyin_result(
+    pause_file: Option<&Path>,
+    now_ms: u64,
+    run: impl FnOnce() -> Result<String, String>,
+) -> Result<String, String> {
+    let stdout = crate::douyin_pause::guarded(pause_file, now_ms, run)?;
+    finished_douyin_file(&stdout).ok_or("Không ghi được file video Douyin.".into())
+}
+
+// Dòng cuối của fetch.py là đường dẫn file. Chỉ nhận khi file có thật và đủ hộp mp4.
+fn finished_douyin_file(stdout: &str) -> Option<String> {
     stdout
         .lines()
         .map(str::trim)
         .rev()
         .find(|line| !line.is_empty())
         .map(PathBuf::from)
-        .filter(|path| file_ready(path))
+        .filter(|path| mp4_complete(path))
         .map(|path| path.to_string_lossy().into_owned())
-        .ok_or("Không ghi được file video Douyin.".into())
 }
 
 // Downloads one YouTube or Douyin video into <output_dir>/tai-ve and returns the file path.
@@ -267,7 +289,7 @@ pub(crate) fn download(
     }
     let dir = output_dir.join("tai-ve");
     // Đã tải link này rồi thì dùng lại file cũ, không hỏi YouTube lại (yt-dlp mất vài giây chỉ để dò thông tin).
-    if let Some(path) = video_id(&url).and_then(|id| downloaded_video(&dir, &id)) {
+    if let Some(path) = reusable_download(&dir, &url) {
         super::source_captions::prepare(app, &path, output_dir, cancel)?;
         return Ok(path.to_string_lossy().into_owned());
     }
@@ -1396,7 +1418,23 @@ fn align_part(path: &Path) {
     );
 }
 
+// File đã tải của link này mà dùng lại được. yt-dlp ghi .part rồi mới đổi tên nên file mang tên cuối là
+// xong. fetch.py của Douyin giờ cũng làm vậy, nhưng folder còn file cụt của bản cũ (ghi thẳng vào tên
+// cuối), nên với Douyin phải nhìn cấu trúc file chứ không chỉ xem nó có byte nào.
+fn reusable_download(dir: &Path, url: &str) -> Option<PathBuf> {
+    let id = video_id(url)?;
+    if url_host(url).is_some_and(|host| douyin_host(&host)) {
+        downloaded_video_if(dir, &id, mp4_complete)
+    } else {
+        downloaded_video(dir, &id)
+    }
+}
+
 fn downloaded_video(dir: &Path, id: &str) -> Option<PathBuf> {
+    downloaded_video_if(dir, id, file_ready)
+}
+
+fn downloaded_video_if(dir: &Path, id: &str, ready: impl Fn(&Path) -> bool) -> Option<PathBuf> {
     let suffixes: Vec<String> = ["mp4", "mkv", "mov", "webm", "m4v"]
         .into_iter()
         .map(|ext| format!("[{id}].{ext}"))
@@ -1413,7 +1451,7 @@ fn downloaded_video(dir: &Path, id: &str) -> Option<PathBuf> {
                         .iter()
                         .any(|suffix| name.ends_with(suffix.as_str()))
                 })
-                && file_ready(path)
+                && ready(path)
         })
 }
 
@@ -1627,6 +1665,94 @@ mod tests {
         assert!(dashy_rejected(
             "ERROR: Requested format is not available. Nếu lỗi lặp lại"
         ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_douyin_file_cut_short_is_not_reused_but_a_whole_one_is() {
+        let dir = scratch_dir("douyin-reuse");
+        let id = "6961737553342991651";
+        let link = format!("https://www.douyin.com/video/{id}");
+        let whole = crate::pipeline::mp4_complete::sample_mp4(300_000);
+        let cut = dir.join(format!("Cắt dở [{id}].mp4"));
+        std::fs::write(&cut, &whole[..whole.len() / 2]).unwrap();
+        assert_eq!(reusable_download(&dir, &link), None);
+        let good = dir.join(format!("Đủ [{id}].mp4"));
+        std::fs::write(&good, &whole).unwrap();
+        assert_eq!(reusable_download(&dir, &link), Some(good));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_path_fetch_py_prints_counts_only_when_the_file_is_whole() {
+        let dir = scratch_dir("douyin-finished");
+        let whole = crate::pipeline::mp4_complete::sample_mp4(300_000);
+        let good = dir.join("Đủ [6961737553342991651].mp4");
+        let cut = dir.join("Cụt [6961737553342991652].mp4");
+        std::fs::write(&good, &whole).unwrap();
+        std::fs::write(&cut, &whole[..whole.len() - 7]).unwrap();
+        let said = |path: &Path| format!("DLP finished 1 1 NA NA 0
+{}
+
+", path.display());
+        assert_eq!(
+            finished_douyin_file(&said(&good)),
+            Some(good.to_string_lossy().into_owned())
+        );
+        assert_eq!(finished_douyin_file(&said(&cut)), None);
+        assert_eq!(finished_douyin_file(&said(&dir.join("khong-co.mp4"))), None);
+        assert_eq!(finished_douyin_file(""), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_douyin_download_stops_at_the_pause_and_otherwise_returns_the_whole_file() {
+        let dir = scratch_dir("douyin-result");
+        let pause = dir.join("douyin-pause.json");
+        let good = dir.join("Đủ [6961737553342991651].mp4");
+        std::fs::write(&good, crate::pipeline::mp4_complete::sample_mp4(300_000)).unwrap();
+        let said = format!("DLP finished 1 1 NA NA 0
+{}
+", good.display());
+        let path = good.to_string_lossy().into_owned();
+        assert_eq!(
+            douyin_result(Some(&pause), 1_000, || Ok(said.clone())),
+            Ok(path.clone())
+        );
+        let blocked = douyin_result(Some(&pause), 2_000, || {
+            Err("[douyin-blocked] Douyin từ chối yêu cầu (HTTP 403).".into())
+        });
+        assert!(blocked.unwrap_err().contains("15 phút"));
+        let mut ran = false;
+        let again = douyin_result(Some(&pause), 3_000, || {
+            ran = true;
+            Ok(said.clone())
+        });
+        assert!(!ran, "vẫn chạy fetch.py trong lúc nghỉ");
+        assert!(again.unwrap_err().contains("nghỉ"));
+        let later = 2_000 + 16 * 60_000;
+        assert_eq!(
+            douyin_result(Some(&pause), later, || Ok(said.clone())),
+            Ok(path)
+        );
+        assert_eq!(
+            douyin_result(Some(&pause), later, || Ok(String::new())),
+            Err("Không ghi được file video Douyin.".to_string())
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_youtube_file_is_reused_without_looking_inside() {
+        // yt-dlp ghi .part rồi mới đổi tên, nên file mang tên cuối đã là xong.
+        let dir = scratch_dir("youtube-reuse");
+        let id = "dQw4w9WgXcQ";
+        let file = dir.join(format!("Talk [{id}].mp4"));
+        std::fs::write(&file, b"full").unwrap();
+        assert_eq!(
+            reusable_download(&dir, "https://youtu.be/dQw4w9WgXcQ"),
+            Some(file)
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
