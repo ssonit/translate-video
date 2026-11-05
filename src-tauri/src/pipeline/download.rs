@@ -231,36 +231,57 @@ fn download_douyin(
         .app_data_dir()
         .ok()
         .map(|dir| crate::douyin_pause::file_in(&dir));
-    douyin_result(pause_file.as_deref(), crate::now_ms(), || {
-        download_report(app, "Đang mở Edge để hỏi Douyin về video.", None);
-        let mut lines = LineSplitter::default();
-        run_tool_with(
-            command,
-            Duration::from_secs(2 * 60 * 60),
-            cancel,
-            &mut |_, text| {
-                for line in lines.push(text) {
-                    let Some(update) = ytdlp_progress(&line) else {
-                        continue;
-                    };
-                    if update.finished {
-                        download_report(app, "Đã tải xong video.", None);
-                        continue;
+    douyin_result(
+        pause_file.as_deref(),
+        crate::now_ms(),
+        || {
+            // Các link Douyin liền nhau không được hỏi dồn: chờ đủ khoảng nghỉ (nút Dừng vẫn có tác dụng).
+            crate::douyin_gap::wait_turn(
+                |seconds| download_report(app, &crate::douyin_gap::waiting_line(seconds), None),
+                || stopped(cancel),
+            )
+        },
+        crate::douyin_gap::note_asked,
+        || {
+            download_report(app, "Đang mở Edge để hỏi Douyin về video.", None);
+            let mut lines = LineSplitter::default();
+            run_tool_with(
+                command,
+                Duration::from_secs(2 * 60 * 60),
+                cancel,
+                &mut |_, text| {
+                    for line in lines.push(text) {
+                        let Some(update) = ytdlp_progress(&line) else {
+                            continue;
+                        };
+                        if update.finished {
+                            download_report(app, "Đã tải xong video.", None);
+                            continue;
+                        }
+                        download_report(app, &update.detail("video"), update.fraction());
                     }
-                    download_report(app, &update.detail("video"), update.fraction());
-                }
-            },
-        )
-    })
+                },
+            )
+        },
+    )
 }
 
 // Một lần tải Douyin: chạy fetch.py (hoặc không chạy nếu đang nghỉ), rồi lấy đường dẫn file đủ từ stdout.
 fn douyin_result(
     pause_file: Option<&Path>,
     now_ms: u64,
+    turn: impl FnOnce() -> Result<(), String>,
+    asked: impl FnOnce(),
     run: impl FnOnce() -> Result<String, String>,
 ) -> Result<String, String> {
-    let stdout = crate::douyin_pause::guarded(pause_file, now_ms, run)?;
+    // Chốt nghỉ đứng trước: đang nghỉ thì báo ngay, không bắt người dùng chờ thêm khoảng nghỉ rồi mới báo.
+    let stdout = crate::douyin_pause::guarded(pause_file, now_ms, || {
+        turn()?;
+        let output = run();
+        // Lỗi hay bị chặn cũng đã gọi tới Douyin, nên cũng tính là một lần hỏi.
+        asked();
+        output
+    })?;
     finished_douyin_file(&stdout).ok_or("Không ghi được file video Douyin.".into())
 }
 
@@ -1691,10 +1712,7 @@ mod tests {
         let cut = dir.join("Cụt [6961737553342991652].mp4");
         std::fs::write(&good, &whole).unwrap();
         std::fs::write(&cut, &whole[..whole.len() - 7]).unwrap();
-        let said = |path: &Path| format!("DLP finished 1 1 NA NA 0
-{}
-
-", path.display());
+        let said = |path: &Path| format!("DLP finished 1 1 NA NA 0\n{}\n\n", path.display());
         assert_eq!(
             finished_douyin_file(&said(&good)),
             Some(good.to_string_lossy().into_owned())
@@ -1711,20 +1729,18 @@ mod tests {
         let pause = dir.join("douyin-pause.json");
         let good = dir.join("Đủ [6961737553342991651].mp4");
         std::fs::write(&good, crate::pipeline::mp4_complete::sample_mp4(300_000)).unwrap();
-        let said = format!("DLP finished 1 1 NA NA 0
-{}
-", good.display());
+        let said = format!("DLP finished 1 1 NA NA 0\n{}\n", good.display());
         let path = good.to_string_lossy().into_owned();
         assert_eq!(
-            douyin_result(Some(&pause), 1_000, || Ok(said.clone())),
+            douyin_unpaced(Some(&pause), 1_000, || Ok(said.clone())),
             Ok(path.clone())
         );
-        let blocked = douyin_result(Some(&pause), 2_000, || {
+        let blocked = douyin_unpaced(Some(&pause), 2_000, || {
             Err("[douyin-blocked] Douyin từ chối yêu cầu (HTTP 403).".into())
         });
         assert!(blocked.unwrap_err().contains("15 phút"));
         let mut ran = false;
-        let again = douyin_result(Some(&pause), 3_000, || {
+        let again = douyin_unpaced(Some(&pause), 3_000, || {
             ran = true;
             Ok(said.clone())
         });
@@ -1732,13 +1748,109 @@ mod tests {
         assert!(again.unwrap_err().contains("nghỉ"));
         let later = 2_000 + 16 * 60_000;
         assert_eq!(
-            douyin_result(Some(&pause), later, || Ok(said.clone())),
+            douyin_unpaced(Some(&pause), later, || Ok(said.clone())),
             Ok(path)
         );
         assert_eq!(
-            douyin_result(Some(&pause), later, || Ok(String::new())),
+            douyin_unpaced(Some(&pause), later, || Ok(String::new())),
             Err("Không ghi được file video Douyin.".to_string())
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Gọi douyin_result khi không quan tâm tới khoảng nghỉ giữa các lần: tới lượt ngay, không ghi gì.
+    fn douyin_unpaced(
+        pause: Option<&Path>,
+        now_ms: u64,
+        run: impl FnOnce() -> Result<String, String>,
+    ) -> Result<String, String> {
+        douyin_result(pause, now_ms, || Ok(()), || {}, run)
+    }
+
+    // Ghi lại thứ tự "chờ tới lượt", "chạy", "ghi nhận đã hỏi" của một lần tải Douyin.
+    fn douyin_traced(
+        pause: Option<&Path>,
+        now_ms: u64,
+        turn: Result<(), String>,
+        run: Result<String, String>,
+    ) -> (Result<String, String>, Vec<&'static str>) {
+        let log = std::cell::RefCell::new(Vec::new());
+        let result = douyin_result(
+            pause,
+            now_ms,
+            || {
+                log.borrow_mut().push("turn");
+                turn
+            },
+            || log.borrow_mut().push("asked"),
+            || {
+                log.borrow_mut().push("run");
+                run
+            },
+        );
+        (result, log.into_inner())
+    }
+
+    fn whole_douyin_output(dir: &Path) -> (String, String) {
+        let good = dir.join("Đủ [6961737553342991651].mp4");
+        std::fs::write(&good, crate::pipeline::mp4_complete::sample_mp4(300_000)).unwrap();
+        let said = format!("DLP finished 1 1 NA NA 0\n{}\n", good.display());
+        (said, good.to_string_lossy().into_owned())
+    }
+
+    #[test]
+    fn a_douyin_download_waits_its_turn_first_and_notes_its_end_last() {
+        let dir = scratch_dir("douyin-turn");
+        let (said, path) = whole_douyin_output(&dir);
+        let (result, log) = douyin_traced(None, 1_000, Ok(()), Ok(said));
+        assert_eq!(result, Ok(path));
+        assert_eq!(log, ["turn", "run", "asked"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_paused_douyin_download_neither_waits_nor_notes_an_ask() {
+        let dir = scratch_dir("douyin-paused-turn");
+        let pause = dir.join("douyin-pause.json");
+        crate::douyin_pause::record_block(&pause, 1_000);
+        let (result, log) = douyin_traced(Some(&pause), 2_000, Ok(()), Ok(String::new()));
+        assert!(result.unwrap_err().contains("nghỉ"));
+        assert!(log.is_empty(), "đang nghỉ mà vẫn chờ hoặc chạy: {log:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stopping_during_the_wait_runs_nothing_and_notes_nothing() {
+        let (result, log) = douyin_traced(None, 1_000, Err("Đã dừng.".into()), Ok(String::new()));
+        assert_eq!(result, Err("Đã dừng.".to_string()));
+        assert_eq!(log, ["turn"]);
+    }
+
+    #[test]
+    fn a_failed_download_still_counts_as_having_asked_douyin() {
+        let (result, log) = douyin_traced(
+            None,
+            1_000,
+            Ok(()),
+            Err("Douyin không trả địa chỉ video.".into()),
+        );
+        assert_eq!(result, Err("Douyin không trả địa chỉ video.".to_string()));
+        assert_eq!(log, ["turn", "run", "asked"]);
+    }
+
+    #[test]
+    fn a_blocked_download_counts_as_having_asked_and_still_starts_the_pause() {
+        let dir = scratch_dir("douyin-blocked-turn");
+        let pause = dir.join("douyin-pause.json");
+        let (result, log) = douyin_traced(
+            Some(&pause),
+            1_000,
+            Ok(()),
+            Err("[douyin-blocked] Douyin từ chối yêu cầu (HTTP 429).".into()),
+        );
+        assert!(result.unwrap_err().contains("15 phút"));
+        assert_eq!(log, ["turn", "run", "asked"]);
+        assert!(crate::douyin_pause::time_left(&pause, 2_000).is_some());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

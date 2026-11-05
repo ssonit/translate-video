@@ -3,6 +3,7 @@ mod media_assets;
 mod audio_mix;
 mod render;
 mod deepseek_server;
+mod douyin_gap;
 mod douyin_pause;
 mod fit_report;
 mod job;
