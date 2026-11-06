@@ -15,6 +15,8 @@ test("pairs split on equals, arrow, and tab", () => {
 test("a repeated heard form is kept once", () => {
   const parsed = parseNamePaste("lina = Lynae\nLina = Lynae");
   assert.equal(parsed.pairs.length, 1);
+  assert.equal(parsed.skippedDuplicates, 1);
+  assert.match(pasteSummary(parsed), /bỏ qua 1 dòng trùng/);
 });
 
 test("a lore table stays out of the name list", () => {

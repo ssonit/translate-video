@@ -1239,17 +1239,28 @@ fn send(
                 Some(secs) => wait_cancel(cancel, Duration::from_secs(*secs))?,
                 None => return Err(format!("{code} Dịch vụ đang quá tải, đã tự thử lại nhưng vẫn lỗi. Chờ vài phút rồi chạy lại.")),
             },
-            Err(error) => return Err(http_error(error)),
+            Err(error) => return Err(http_error(error, headers)),
         }
     };
     let body = response.into_string().map_err(|error| error.to_string())?;
     serde_json::from_str(&body).map_err(|_| "Phản hồi không phải JSON.".into())
 }
 
-fn http_error(error: ureq::Error) -> String {
+fn http_error(error: ureq::Error, headers: &[(&str, &str)]) -> String {
     match error {
         ureq::Error::Status(code, response) => {
-            let body = response.into_string().unwrap_or_default();
+            if code == 401 || code == 403 {
+                return format!("{code} API key không hợp lệ hoặc chưa có quyền dùng model này. Kiểm tra key và quyền truy cập rồi thử lại.");
+            }
+            let mut body = response.into_string().unwrap_or_default();
+            // Some gateways echo the rejected credential in their error body.
+            // Redact before truncation, so a long key cannot leak its prefix.
+            for (name, value) in headers {
+                if name.eq_ignore_ascii_case("authorization") || name.to_ascii_lowercase().contains("api-key") {
+                    let key = value.strip_prefix("Bearer ").unwrap_or(value);
+                    if !key.is_empty() { body = body.replace(key, "[đã ẩn key]"); }
+                }
+            }
             format!("{code} {}", brief(&body))
         }
         ureq::Error::Transport(_) => "Không kết nối được.".into(),
@@ -1406,7 +1417,46 @@ mod tests {
     }
 
     #[test]
-    fn cancellation_stops_http_retry_backoff_without_sending_another_request() {
+    fn translate_http_errors_redact_reflected_keys_before_truncating() {
+        let key = "QA-SECRET-0123456789";
+        let auth = format!("Bearer {key}");
+        for header in ["Authorization", "x-api-key", "x-goog-api-key"] {
+            let value = if header == "Authorization" { auth.as_str() } else { key };
+            for code in [400, 401, 403] {
+                let body = format!("rejected {} {}", key, "x".repeat(300));
+                let response = ureq::Response::new(code, "Rejected", &body).unwrap();
+                let error = http_error(ureq::Error::Status(code, response), &[(header, value)]);
+                assert!(!error.contains(key));
+                if code == 401 || code == 403 { assert!(error.contains("API key không hợp lệ")); }
+                else { assert!(error.contains("[đã ẩn key]")); }
+            }
+        }
+    }
+
+    #[test]
+    fn translate_http_rejects_malformed_json_and_times_out_without_retrying_transport() {
+        use std::io::{Read, Write};
+        for delayed in [false, true] {
+            let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = format!("http://{}/translate", server.local_addr().unwrap());
+            let worker = std::thread::spawn(move || {
+                let (mut stream, _) = server.accept().unwrap();
+                stream.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+                let mut request = [0u8; 4096];
+                let _ = stream.read(&mut request);
+                if delayed { std::thread::sleep(Duration::from_millis(400)); }
+                let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\nnot-json");
+            });
+            let agent = ureq::AgentBuilder::new().timeout(Duration::from_millis(150)).build();
+            let error = send(&agent, "POST", &url, &[], &serde_json::json!({}), &AtomicBool::new(false)).unwrap_err();
+            if delayed { assert_eq!(error, "Không kết nối được."); }
+            else { assert_eq!(error, "Phản hồi không phải JSON."); }
+            worker.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn translate_http_cancellation_stops_retry_backoff_without_sending_another_request() {
         use std::io::{BufRead, Read, Write};
         let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}/test", server.local_addr().unwrap());

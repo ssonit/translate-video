@@ -118,6 +118,11 @@ fn read_image(path: &Path) -> Result<(Vec<u8>, &'static str, String), String> {
     } else {
         return Err("Logo phải là ảnh PNG hoặc JPEG.".into());
     };
+    let mut decoder = std::process::Command::new("ffmpeg");
+    decoder.args(["-v", "error", "-xerror", "-i"]).arg(path)
+        .args(["-map", "0:v:0", "-frames:v", "1", "-f", "null", "-"]);
+    crate::capture(decoder, std::time::Duration::from_secs(15))
+        .map_err(|_| "Không đọc được ảnh logo. Ảnh có thể bị hỏng; hãy chọn lại PNG hoặc JPEG hợp lệ.".to_string())?;
     let hash = format!("{:x}", Sha256::digest(&bytes));
     Ok((bytes, ext, hash))
 }
@@ -209,4 +214,23 @@ pub(crate) fn stage(
         .to_string_lossy()
         .into_owned();
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn truncated_logo_is_rejected_before_it_can_be_cached() {
+        let dir = std::env::temp_dir().join(format!("logo-validation-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bad = dir.join("bad.png");
+        std::fs::write(&bad, b"\x89PNG\r\n\x1a\n\0\0\0\0").unwrap();
+        assert!(read_image(&bad).unwrap_err().contains("Không đọc được ảnh logo"));
+        let valid = dir.join("good.png");
+        let mut make = std::process::Command::new("ffmpeg");
+        make.args(["-v", "error", "-f", "lavfi", "-i", "color=red:s=16x16", "-frames:v", "1", "-y"]).arg(&valid);
+        crate::capture(make, std::time::Duration::from_secs(15)).unwrap();
+        assert_eq!(read_image(&valid).unwrap().1, "png");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }

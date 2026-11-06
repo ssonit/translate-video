@@ -233,12 +233,16 @@ export function jobActions(s: Session) {
         (item): item is string => typeof item === "string" && item !== "",
       );
       if (paths.length === 0) return;
+      // The Windows dialog can still accept a manually typed non-video path.
+      // Validate before changing the source or enqueuing any of the selection.
+      const briefs = await Promise.all(paths.map(path => invoke<{width:number; height:number; duration:number}>("video_brief", { path })));
       s.setError("");
       if (s.running) {
         pushJobs(paths.map((path) => jobSnapshot("file", path)));
         return;
       }
       s.setComposeVideo(paths[0]);
+      s.setSourceBrief({ ...briefs[0], path: paths[0] });
       s.setResult("");
       if (paths.length > 1) pushJobs(paths.slice(1).map((path) => jobSnapshot("file", path)));
     } catch (caught) {
@@ -383,7 +387,7 @@ export function jobActions(s: Session) {
     s.setRunStartedAt(null);
     s.setRunning(true);
     s.setView("progress");
-    s.ownsRun.current = true;
+    s.runEpoch.current += 1; s.ownsRun.current = true;
     if (spec.mode === "link") s.setLink(spec.source);
     try {
       if (spec.voice) await invoke("save_voice", { lang: spec.target, name: spec.voice });
@@ -587,7 +591,7 @@ export function jobActions(s: Session) {
     s.setSteps(freshSteps(false));
     s.setRunning(true);
     s.setView("progress");
-    s.ownsRun.current = true;
+    s.runEpoch.current += 1; s.ownsRun.current = true;
     s.setDownload({ detail: "Đang tải video.", progress: null });
     s.setDownloading(true);
     try {
@@ -627,7 +631,7 @@ export function jobActions(s: Session) {
     if (s.gate.current || s.running) return;
     s.gate.current = true; s.holdQueue.current = false; s.skipActive.current = false;
     s.setError(""); s.setSteps(freshSteps(s.audioOnly, s.textOnly));
-    s.setRunning(true); s.ownsRun.current = true; s.setView("progress");
+    s.setRunning(true); s.runEpoch.current += 1; s.ownsRun.current = true; s.setView("progress");
     try {
       let source = s.composeVideo;
       if (s.mode === "link") {
@@ -636,7 +640,7 @@ export function jobActions(s: Session) {
         s.setSteps(freshSteps(s.audioOnly, s.textOnly));
         s.setRunning(true);
         s.setView("progress");
-        s.ownsRun.current = true;
+        s.runEpoch.current += 1; s.ownsRun.current = true;
         s.setDownload({ detail: s.audioOnly ? "Đang lấy phụ đề." : "Đang chuẩn bị tải.", progress: null });
         s.setDownloading(true);
         source = s.audioOnly
@@ -683,7 +687,7 @@ export function jobActions(s: Session) {
       armPreview(s.audioOnly);
       s.setView("live");
       s.setRunning(true);
-      s.ownsRun.current = true;
+      s.runEpoch.current += 1; s.ownsRun.current = true;
       await invoke("start_watch", {
         video: source,
         outputDir: s.folder,

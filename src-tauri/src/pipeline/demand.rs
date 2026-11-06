@@ -659,6 +659,7 @@ fn speech_warnings(cues: &[EditedCue], state: Option<&crate::draft::Status>, dur
 pub(crate) struct View {
     pub root: String,
     pub source: String,
+    pub source_url: String,
     pub revision: String,
     pub duration: f64,
     pub options: Options,
@@ -913,6 +914,7 @@ fn view_verified(
         else { speech_warnings(&cues, state, duration) };
     Ok(View {
         root: job.root.to_string_lossy().into_owned(),
+        source_url: crate::job::source_url(&job.root),
         source: if source.is_file() {
             source.to_string_lossy().into_owned()
         } else {

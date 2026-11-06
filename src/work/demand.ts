@@ -6,7 +6,7 @@ export type DraftOptions = {
 };
 export type DraftCue = { id: string; slot: number; sources: number[]; authored: boolean; keep_speech: boolean;
   line: { start: number; end: number; source: string; translation: string } };
-export type DraftView = { root: string; source: string; revision: string; duration: number; options: DraftOptions;
+export type DraftView = { root: string; source: string; sourceUrl?: string; revision: string; duration: number; options: DraftOptions;
   cues: DraftCue[]; canUndo: boolean; namesReviewed: boolean; ready: string[]; lastExport: string | null; warning?: string | null;
   speechWarnings?: { id: string; lostSeconds: number; tentative: boolean }[] };
 

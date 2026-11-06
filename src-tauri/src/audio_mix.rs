@@ -77,7 +77,9 @@ impl AudioMix {
         if let Some(source) = source_input.filter(|_| self.original > 0.0) {
             let mut graph=format!("[{source}:a:0]aformat=sample_rates=48000:channel_layouts=stereo,volume={original:.5}[source];");
             if let Some(env) = envelope_input {
-                graph.push_str(&format!("[{env}:a:0]aformat=sample_rates=48000:channel_layouts=stereo[envelope];[source][envelope]amultiply[original];"));
+                // A mono control signal is a gain, not audio: duplicate it at
+                // unity instead of the default -3 dB mono-to-stereo upmix.
+                graph.push_str(&format!("[{env}:a:0]pan=stereo|c0=c0|c1=c0,aformat=sample_rates=48000:channel_layouts=stereo[envelope];[source][envelope]amultiply[original];"));
             } else {
                 graph.push_str("[source]anull[original];");
             }
@@ -182,6 +184,10 @@ mod tests {
             (slice.iter().map(|v| f64::from(*v).powi(2)).sum::<f64>() / slice.len() as f64).sqrt()
         };
         let before = rms(0.2, 0.7);
+        // mono sine -> stereo uses the normal -3 dB upmix once. The
+        // control envelope must not introduce another -3 dB loss.
+        let expected = 4095.0 / 2.0;
+        assert!((before / expected - 1.0).abs() < 0.04, "unexpected dry gain: {before}");
         let inside = rms(1.2, 1.7);
         let after = rms(2.3, 2.8);
         assert!(

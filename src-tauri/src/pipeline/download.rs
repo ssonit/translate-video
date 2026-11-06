@@ -308,11 +308,20 @@ pub(crate) fn download(
     if !output_dir.is_dir() {
         return Err("Folder kết quả chưa có.".into());
     }
-    let dir = output_dir.join("tai-ve");
+    let mut dir = output_dir.join("tai-ve");
     // Đã tải link này rồi thì dùng lại file cũ, không hỏi YouTube lại (yt-dlp mất vài giây chỉ để dò thông tin).
     if let Some(path) = reusable_download(&dir, &url) {
-        super::source_captions::prepare(app, &path, output_dir, cancel)?;
-        return Ok(path.to_string_lossy().into_owned());
+        if has_picture(&path) {
+            super::source_captions::prepare(app, &path, output_dir, cancel)?;
+            return Ok(path.to_string_lossy().into_owned());
+        }
+        // An audio-only webm from Nghe trước may have the same final name.
+        // Keep it at its recorded source path and download the picture beside it.
+        dir = dir.join("video");
+        if let Some(path) = reusable_download(&dir, &url).filter(|p| has_picture(p)) {
+            super::source_captions::prepare(app, &path, output_dir, cancel)?;
+            return Ok(path.to_string_lossy().into_owned());
+        }
     }
     require_tool("ffmpeg")?;
     stopped(cancel)?;
@@ -548,7 +557,7 @@ pub(crate) fn attach_video(
         return Err("Chưa thấy việc đã lưu.".into());
     }
     crate::note_live_video(app, &root);
-    if saved_picture(&root).is_some() {
+    if saved_picture(&root).is_some_and(|p| has_picture(&p)) {
         return Ok(root.to_string_lossy().into_owned());
     }
     let url = source_url(&root);
@@ -1455,6 +1464,12 @@ fn downloaded_video(dir: &Path, id: &str) -> Option<PathBuf> {
     downloaded_video_if(dir, id, file_ready)
 }
 
+fn has_picture(path: &Path) -> bool {
+    let mut probe = Command::new("ffprobe");
+    probe.args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_type", "-of", "csv=p=0"]).arg(path);
+    crate::capture(probe, Duration::from_secs(10)).is_ok_and(|s| s.trim() == "video")
+}
+
 fn downloaded_video_if(dir: &Path, id: &str, ready: impl Fn(&Path) -> bool) -> Option<PathBuf> {
     let suffixes: Vec<String> = ["mp4", "mkv", "mov", "webm", "m4v"]
         .into_iter()
@@ -1482,6 +1497,13 @@ fn download_error(error: String, site: &str) -> String {
     }
     if error == "Đã dừng." {
         return error;
+    }
+    let lower = error.to_ascii_lowercase();
+    if ["connection", "timed out", "timeout", "proxy", "resolve", "resolution", "network is unreachable", "winerror 100"].iter().any(|s| lower.contains(s)) {
+        return format!("Không kết nối được tới {site} để tải video. Kiểm tra mạng hoặc proxy rồi thử lại.");
+    }
+    if lower.contains("unavailable") || lower.contains("private video") || lower.contains("not available") {
+        return format!("Video trên {site} không tồn tại, đã bị gỡ hoặc đang riêng tư. Kiểm tra lại link.");
     }
     format!("{error} Nếu lỗi lặp lại, chạy yt-dlp -U trong terminal để cập nhật rồi thử lại.")
 }
@@ -2336,5 +2358,36 @@ mod tests {
         assert_eq!(source_url(&root), "");
         assert_eq!(listen_folder(&output, PIPE_TITLE, PIPE_ID, PIPE_LINK), PIPE_FILE);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod acceptance_regressions {
+    use super::*;
+    #[test]
+    fn network_errors_are_actionable_without_recommending_an_update() {
+        for raw in ["ailed: Unable to connect to proxy", "Connection refused", "Read timed out", "Temporary failure in name resolution"] {
+            let error = download_error(raw.into(), "YouTube");
+            assert!(error.contains("Kiểm tra mạng hoặc proxy"), "{error}");
+            assert!(!error.contains("yt-dlp -U"));
+        }
+        assert!(download_error("This video is unavailable".into(), "YouTube").contains("riêng tư"));
+        assert_eq!(download_error("Đã dừng.".into(), "YouTube"), "Đã dừng.");
+    }
+    #[test]
+    fn an_audio_only_webm_is_not_a_reusable_picture() {
+        let dir = std::env::temp_dir().join(format!("picture-cache-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let audio = dir.join("audio.webm");
+        let video = dir.join("video.mp4");
+        let mut make = Command::new("ffmpeg");
+        make.args(["-v","error","-f","lavfi","-i","sine=frequency=440:duration=0.1","-c:a","libopus","-y"]).arg(&audio);
+        crate::capture(make, Duration::from_secs(15)).unwrap();
+        let mut make = Command::new("ffmpeg");
+        make.args(["-v","error","-f","lavfi","-i","color=red:s=16x16:d=0.1","-c:v","libx264","-y"]).arg(&video);
+        crate::capture(make, Duration::from_secs(15)).unwrap();
+        assert!(!has_picture(&audio));
+        assert!(has_picture(&video));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

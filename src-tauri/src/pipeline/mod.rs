@@ -270,6 +270,10 @@ pub(crate) fn run(
     render: crate::render::RenderSettings,
     cancel: &AtomicBool,
 ) -> Result<String, String> {
+    // Reject corrupt file inputs before Job::open creates an unfinished job.
+    if video.is_file() {
+        media::media_duration(video, cancel).map_err(|error| if error == "Đã dừng." { error } else { "Không đọc được video nguồn. Kiểm tra file rồi chọn lại video hợp lệ.".to_string() })?;
+    }
     let mut job = Job::open(video, output_dir)?;
     let draft_source = crate::draft::inspect_source(&job, cancel)?;
     let (target_code, target_name) = clean_target(target);

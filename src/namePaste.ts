@@ -4,6 +4,7 @@ export type NamePaste = {
   pairs: NamePair[];
   skippedMeanings: number;
   skippedNames: number;
+  skippedDuplicates?: number;
 };
 
 const PAIR_MARK = /^(.+?)\s*(?:=|→|->|=>)\s*(.+)$/;
@@ -59,6 +60,7 @@ export function parseNamePaste(text: string): NamePaste {
   const seen = new Set<string>();
   let skippedMeanings = 0;
   let skippedNames = 0;
+  let skippedDuplicates = 0;
   for (const raw of text.split(/\r?\n/)) {
     const line = raw.trim();
     if (!line) continue;
@@ -73,11 +75,12 @@ export function parseNamePaste(text: string): NamePaste {
       continue;
     }
     const key = pair.from.toLocaleLowerCase();
-    if (seen.has(key) || key === pair.to.toLocaleLowerCase()) continue;
+    if (seen.has(key)) { skippedDuplicates += 1; continue; }
+    if (key === pair.to.toLocaleLowerCase()) continue;
     seen.add(key);
     pairs.push({ from: pair.from, to: pair.to });
   }
-  return { pairs, skippedMeanings, skippedNames };
+  return { pairs, skippedMeanings, skippedNames, skippedDuplicates };
 }
 
 export function mergeNameRows(rows: NamePair[], pairs: NamePair[]): NamePair[] {
@@ -93,10 +96,8 @@ export function mergeNameRows(rows: NamePair[], pairs: NamePair[]): NamePair[] {
 }
 
 export function pasteSummary(parsed: NamePaste): string {
-  if (parsed.pairs.length === 0) {
-    return "Chưa thêm dòng nào. Mỗi dòng một cặp: chữ nghe được, dấu =, tên đúng. Ví dụ: Lina = Lynae.";
-  }
-  const bits = [`Đã thêm ${parsed.pairs.length} tên.`];
+  const bits = [parsed.pairs.length ? `Đã thêm ${parsed.pairs.length} tên.` : "Chưa thêm dòng nào. Mỗi dòng một cặp: chữ nghe được, dấu =, tên đúng. Ví dụ: Lina = Lynae."];
+  if (parsed.skippedDuplicates) bits.push(`Đã bỏ qua ${parsed.skippedDuplicates} dòng trùng; giữ tên đã có.`);
   if (parsed.skippedMeanings) {
     bits.push(`${parsed.skippedMeanings} dòng giải nghĩa nằm ngoài bảng.`);
   }

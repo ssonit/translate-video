@@ -18,6 +18,7 @@ import type {
 } from "./types";
 
 export function useWorkState() {
+  const runEpoch = useRef(0);
   const [render, setRender] = useState(readRender);
   const [presets, setPresets] = useState(readPresets);
   const [presetApplying, setPresetApplying] = useState(false);
@@ -39,6 +40,7 @@ export function useWorkState() {
   const [mode, setMode] = useState<"file" | "link">("link");
   const [link, setLink] = useState("");
   const [composeVideo, setComposeVideo] = useState("");
+  const [sourceBrief, setSourceBrief] = useState<{path: string; width: number; height: number; duration: number} | null>(null);
   const [composeLink, setComposeLink] = useState("");
   const [linkError, setLinkError] = useState("");
   const [queue, setQueue] = useState<QueueJob[]>(() => restoreQueue(readSavedQueue(), false));
@@ -145,6 +147,7 @@ export function useWorkState() {
   const mediaRef = useRef<HTMLMediaElement | null>(null);
 
   return {
+    runEpoch,
     render, setRender, presets, setPresets, presetApplying, setPresetApplying,
     target,
     setTarget,
@@ -164,6 +167,7 @@ export function useWorkState() {
     setLink,
     composeVideo,
     setComposeVideo,
+    sourceBrief, setSourceBrief,
     composeLink,
     setComposeLink,
     linkError,

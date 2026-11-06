@@ -121,6 +121,11 @@ fn story_captions(job: &Job, lines: &[TranslatedLine]) -> Result<Vec<TranslatedL
     if spans.len() != lines.len() {
         return Err("Không khớp được mốc câu của audio.".into());
     }
+    for (index, (line, span)) in lines.iter().zip(&spans).enumerate() {
+        if !line.translation.trim().is_empty() && span.end - span.start < 0.001 {
+            return Err(format!("Câu {} có lời nhưng không có tiếng đọc. Kiểm tra giọng và tạo lại câu này trước khi xuất audio.", index + 1));
+        }
+    }
     Ok(lines
         .iter()
         .zip(spans)
@@ -148,6 +153,9 @@ fn fit_story(
         "Đang nối các câu thành một mạch.",
     );
     let (rate, pieces) = load_story_pieces(job, lines)?;
+    // Validate before writing the mix; otherwise an all-silent TTS sentence
+    // disappears from the audio and creates a zero-duration subtitle block.
+    story_captions(job, lines)?;
     stopped(cancel)?;
     let samples = join_story(rate, &pieces);
     write_wav(&job.dub(), &Pcm { rate, samples })?;
@@ -288,10 +296,11 @@ pub(super) fn export_audio(
     lines: &[TranslatedLine],
     cancel: &AtomicBool,
 ) -> Result<(), String> {
-    let captions = story_captions(job, lines).unwrap_or_else(|_| lines.to_vec());
-    write_srt(&job.subtitles(), &captions)?;
     let spoken = job.spoken();
     if file_ready(&spoken) {
+        if !job.subtitles().is_file() {
+            write_srt(&job.subtitles(), &story_captions(job, lines)?)?;
+        }
         release_mix(&job.root);
         report_named(
             app,
@@ -302,6 +311,7 @@ pub(super) fn export_audio(
         );
         return Ok(());
     }
+    let captions = story_captions(job, lines)?;
     let source = if file_ready(&job.dub()) {
         job.dub()
     } else if file_ready(&job.result()) {
@@ -326,6 +336,7 @@ pub(super) fn export_audio(
             fraction,
         );
     })?;
+    write_srt(&job.subtitles(), &captions)?;
     release_mix(&job.root);
     report_named(
         app,
@@ -712,9 +723,7 @@ fn encode_spoken(
         let _ = std::fs::remove_file(&partial);
         return Err("FFmpeg không ghi được audio bản dịch.".into());
     }
-    let _ = std::fs::remove_file(out);
-    std::fs::rename(&partial, out).map_err(|error| error.to_string())?;
-    Ok(())
+    publish_encoded(&partial, out, cancel)
 }
 
 fn audio_partial(out: &Path) -> PathBuf {
@@ -780,11 +789,16 @@ pub(super) fn write_video_output(
         let _ = std::fs::remove_file(&partial);
         return Err("FFmpeg không ghi được video kết quả.".into());
     }
-    if let Err(error) = std::fs::rename(&partial, out) {
-        let _ = std::fs::remove_file(&partial);
-        return Err(error.to_string());
-    }
-    Ok(())
+    publish_encoded(&partial, out, cancel)
+}
+
+// A completed encoder is not yet a published export. Cancellation may arrive
+// with its final progress notification. Never delete the previous destination
+// first: rename replaces it atomically, or leaves it intact on failure.
+fn publish_encoded(partial: &Path, out: &Path, cancel: &AtomicBool) -> Result<(), String> {
+    let result = stopped(cancel).and_then(|()| std::fs::rename(partial, out).map_err(|e| e.to_string()));
+    if result.is_err() { let _ = std::fs::remove_file(partial); }
+    result
 }
 
 fn copy_temp(dest: &Path) -> Result<(PathBuf, std::fs::File), String> {
@@ -1149,9 +1163,7 @@ fn burn_file_with(
         let _ = std::fs::remove_file(&partial);
         return Err("FFmpeg không ghi được chữ vào video.".into());
     }
-    let _ = std::fs::remove_file(out);
-    std::fs::rename(&partial, out).map_err(|error| error.to_string())?;
-    Ok(())
+    publish_encoded(&partial, out, cancel)
 }
 
 fn mp4_can_copy_audio(path: &Path) -> bool {
@@ -1687,6 +1699,38 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    #[test]
+    fn cancelled_final_publication_preserves_previous_export_and_cleans_partial() {
+        let dir = save_video_dir("cancel-publication");
+        for ext in ["mp4", "m4a"] {
+            let out = dir.join(format!("result.{ext}"));
+            let partial = dir.join(format!("result.partial.{ext}"));
+            std::fs::write(&out, b"previous finished export").unwrap();
+            std::fs::write(&partial, b"new complete encoding").unwrap();
+            assert_eq!(publish_encoded(&partial, &out, &AtomicBool::new(true)).unwrap_err(), "Đã dừng.");
+            assert_eq!(std::fs::read(&out).unwrap(), b"previous finished export");
+            assert!(!partial.exists());
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn failed_final_publication_preserves_locked_destination_and_cleans_partial() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = save_video_dir("locked-publication");
+        let out = dir.join("result.mp4");
+        let partial = dir.join("result.partial.mp4");
+        std::fs::write(&out, b"previous finished export").unwrap();
+        std::fs::write(&partial, b"new complete encoding").unwrap();
+        let lock = std::fs::OpenOptions::new().read(true).share_mode(1).open(&out).unwrap();
+        assert!(publish_encoded(&partial, &out, &AtomicBool::new(false)).is_err());
+        assert_eq!(std::fs::read(&out).unwrap(), b"previous finished export");
+        assert!(!partial.exists());
+        drop(lock);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     fn test_video_command(realtime: bool) -> Command {
         let mut command = Command::new("ffmpeg");
         command.args([
@@ -1912,6 +1956,18 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    #[test]
+    fn story_captions_reject_nonempty_text_with_silent_speech() {
+        let (dir, job) = text_job("story-silent-sentence");
+        std::fs::create_dir_all(job.root.join("lines")).unwrap();
+        write_wav(&job.line_wav(1), &Pcm { rate: 22050, samples: vec![0; 22050] }).unwrap();
+        let lines = vec![said(0.0, 1.0, "Câu có chữ nhưng không có tiếng")];
+        let error = story_captions(&job, &lines).unwrap_err();
+        assert!(error.contains("Câu 1") && error.contains("không có tiếng đọc"));
+        assert!(!job.subtitles().exists());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

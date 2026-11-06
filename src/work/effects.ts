@@ -25,9 +25,10 @@ export function useWorkEffects(
 ) {
   useEffect(() => {
     let live = true;
+    const epoch = s.runEpoch.current;
     invoke<DubStatus>("dub_status")
       .then((status) => {
-        if (!live || s.ownsRun.current) return;
+        if (!live || s.ownsRun.current || s.runEpoch.current !== epoch) return;
         if (!status.running && status.steps.length === 0 && !status.result && !status.error) return;
         fx.applyStatus(status);
         if (status.running || status.error) s.setView("progress");
@@ -38,7 +39,9 @@ export function useWorkEffects(
       })
       .catch(() => {});
     const unlisten = listen<DubStatus>("dub-finished", (event) => {
-      if (s.ownsRun.current) return;
+      // Local invocations publish their own result. This event only recovers
+      // work inherited from a previous window, before any new local run.
+      if (s.ownsRun.current || s.runEpoch.current !== epoch) return;
       fx.applyStatus(event.payload);
       if (event.payload.result) {
         s.setRunNotice("Xử lý đã hoàn tất. Đang mở kết quả để bạn xem.");
@@ -64,9 +67,10 @@ export function useWorkEffects(
     const timer = window.setInterval(async () => {
       if (checking || s.ownsRun.current) return;
       checking = true;
+      const epoch = s.runEpoch.current;
       try {
         const status = await invoke<DubStatus>("dub_status");
-        if (!live || s.ownsRun.current || status.running) return;
+        if (!live || s.ownsRun.current || s.runEpoch.current !== epoch || status.running) return;
         fx.applyStatus(status);
         if (status.result) {
           s.setRunNotice("Xử lý đã hoàn tất. Đang mở kết quả để bạn xem.");
@@ -316,9 +320,10 @@ export function useWorkEffects(
     if (!saved.current) return;
     let live = true;
     const current = saved.current;
+    const epoch = s.runEpoch.current;
     invoke<DubStatus>("dub_status")
       .then((status) => {
-        if (!live) return;
+        if (!live || s.ownsRun.current || s.runEpoch.current !== epoch) return;
         const key = queueKey(current.mode, current.source);
         if (status.running) {
           s.activeJob.current = current;

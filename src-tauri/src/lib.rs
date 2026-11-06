@@ -1460,6 +1460,24 @@ fn delete_kept_version(output_dir: String, path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn video_brief(path: String) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut command = Command::new("ffprobe");
+        command.args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height:format=duration", "-of", "json"]).arg(&path);
+        let text = capture(command, Duration::from_secs(15))
+            .map_err(|_| "Không đọc được video. Chọn lại file video hợp lệ trên máy.".to_string())?;
+        let value: serde_json::Value = serde_json::from_str(&text).map_err(|_| "Không đọc được thông tin video.".to_string())?;
+        let width = value["streams"][0]["width"].as_u64().unwrap_or(0);
+        let height = value["streams"][0]["height"].as_u64().unwrap_or(0);
+        let duration = value["format"]["duration"].as_str().and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
+        if width == 0 || height == 0 || !duration.is_finite() || duration <= 0.0 {
+            return Err("File đã chọn không phải video có thời lượng hợp lệ.".into());
+        }
+        Ok(serde_json::json!({"width":width,"height":height,"duration":duration}))
+    }).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 async fn finished_result(
     app: tauri::AppHandle,
     video: String,
@@ -2231,6 +2249,11 @@ fn save_names_at(root: String, names: Vec<names::NameFix>) -> Result<bool, Strin
     let before: names::NameList = job::read_json(&job.names_path()).unwrap_or_default();
     let cleaned = names::usable_names(&names);
     let changed = names::name_signature(&before.names) != names::name_signature(&cleaned);
+    if changed {
+        // Keep completed exports available in history before invalidating the
+        // translation and speech generated with the old names.
+        history::ensure_previous(&job.root)?;
+    }
     job::write_json(
         &job.names_path(),
         &names::NameList {
@@ -2238,6 +2261,9 @@ fn save_names_at(root: String, names: Vec<names::NameFix>) -> Result<bool, Strin
             names: cleaned,
         },
     )?;
+    if changed {
+        pipeline::drop_after_names(&job);
+    }
     Ok(changed)
 }
 
@@ -2355,6 +2381,7 @@ pub fn run() {
             cancel_draft_region,
             sample_draft,
             delete_kept_version,
+            video_brief,
             finished_result,
             delete_dub,
             dub_lines,
@@ -2793,7 +2820,7 @@ mod tests {
     }
 
     #[test]
-    fn save_names_keeps_the_translation() {
+    fn changed_names_invalidate_translation_terms_and_speech_but_keep_transcript() {
         let dir = scratch("save-names");
         let root = dir.join("tap");
         fs::create_dir_all(root.join("lines")).unwrap();
@@ -2803,6 +2830,10 @@ mod tests {
             br#"[{"start":0,"end":1,"source":"Ann","translation":"An"}]"#,
         )
         .unwrap();
+        fs::write(root.join("transcript.json"), b"original transcript").unwrap();
+        fs::write(root.join("lines.json"), b"original lines").unwrap();
+        fs::write(root.join("terms.json"), b"old terms").unwrap();
+        fs::write(root.join("lines/001.wav"), b"old speech").unwrap();
         let changed = save_names_at(
             root.to_string_lossy().into_owned(),
             vec![names::NameFix {
@@ -2812,10 +2843,14 @@ mod tests {
         )
         .unwrap();
         assert!(changed);
-        let text = fs::read_to_string(root.join("translation.json")).unwrap();
-        assert!(
-            text.contains("\"translation\": \"An\"") || text.contains("\"translation\":\"An\"")
-        );
+        assert!(!root.join("translation.json").exists());
+        assert!(!root.join("terms.json").exists());
+        assert!(!root.join("lines/001.wav").exists());
+        assert_eq!(fs::read(root.join("transcript.json")).unwrap(), b"original transcript");
+        assert_eq!(fs::read(root.join("lines.json")).unwrap(), b"original lines");
+        fs::write(root.join("translation.json"), b"unchanged names preserve this").unwrap();
+        assert!(!save_names_at(root.to_string_lossy().into_owned(), vec![names::NameFix { from: "Ann".into(), to: "Anne".into() }]).unwrap());
+        assert!(root.join("translation.json").exists());
         let _ = fs::remove_dir_all(&dir);
     }
 }

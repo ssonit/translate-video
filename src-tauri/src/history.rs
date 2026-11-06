@@ -150,6 +150,44 @@ struct Current {
     primary: String,
 }
 
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+struct HiddenAlias {
+    folder: String,
+    name: String,
+    sha256: String,
+}
+
+// Older exporters kept extra byte-identical copies outside typed snapshots.
+// Deleting a visible version must not make those already-hidden aliases appear
+// as new versions. Keep the files; remember only the exact aliases and hashes.
+pub(crate) fn delete_archive(root: &Path, slot: &Path) -> Result<(), String> {
+    let kept = root.join(crate::job::KEPT_DIR).canonicalize().map_err(|e| e.to_string())?;
+    let slot = slot.canonicalize().map_err(|e| e.to_string())?;
+    if slot.parent() != Some(kept.as_path()) { return Err("Chỉ xóa được bản đã cất.".into()); }
+    if let Ok(record) = read_snapshot(&slot) {
+        let manifest = root.join("history-hidden-aliases.json");
+        let mut hidden: Vec<HiddenAlias> = if manifest.exists() { read_json(&manifest)? } else { Vec::new() };
+        for entry in std::fs::read_dir(&kept).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let folder = entry.path();
+            if folder == slot || !entry.file_type().map_err(|e| e.to_string())?.is_dir() || read_snapshot(&folder).is_ok() { continue; }
+            let folder_name = entry.file_name().to_string_lossy().into_owned();
+            if !safe_name(&folder_name) || folder_name.starts_with('.') { continue; }
+            for file in std::fs::read_dir(&folder).map_err(|e| e.to_string())? {
+                let file = file.map_err(|e| e.to_string())?;
+                let path = file.path();
+                if !file.file_type().map_err(|e| e.to_string())?.is_file() || !media(&path) { continue; }
+                let Some(saved) = record.files.iter().find(|s| stamp(&path).is_ok_and(|m| m.0 == s.bytes)
+                    && digest(&path, &AtomicBool::new(false)).is_ok_and(|hash| hash == s.sha256)) else { continue; };
+                let alias = HiddenAlias { folder: folder_name.clone(), name: file.file_name().to_string_lossy().into_owned(), sha256: saved.sha256.clone() };
+                if !hidden.contains(&alias) { hidden.push(alias); }
+            }
+        }
+        if !hidden.is_empty() { write_json(&manifest, &hidden)?; }
+    }
+    std::fs::remove_dir_all(slot).map_err(|e| format!("Không xóa được: {e}"))
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct VersionFile {
@@ -601,6 +639,7 @@ pub(crate) fn remove(root: &Path, id: &str) -> Result<(), String> {
 
 pub(crate) fn enrich(root: &Path, items: &mut Vec<crate::job::KeptVersion>) {
     let records = snapshots(root);
+    let hidden: Vec<HiddenAlias> = read_json(&root.join("history-hidden-aliases.json")).unwrap_or_default();
     let current = read_json::<Current>(&root.join("history-current.json"))
         .ok()
         .filter(|c| {
@@ -616,6 +655,12 @@ pub(crate) fn enrich(root: &Path, items: &mut Vec<crate::job::KeptVersion>) {
     items.retain_mut(|item| {
         let path = Path::new(&item.path);
         let folder = path.parent().unwrap_or(root);
+        if hidden.iter().any(|alias| safe_name(&alias.folder) && safe_name(&alias.name)
+            && folder == root.join(crate::job::KEPT_DIR).join(&alias.folder)
+            && path.file_name().is_some_and(|n| n == alias.name.as_str())
+            && digest(path, &AtomicBool::new(false)).is_ok_and(|hash| hash == alias.sha256)) {
+            return false;
+        }
         if folder
             .file_name()
             .and_then(|s| s.to_str())
@@ -980,6 +1025,30 @@ mod tests {
         std::fs::write(f.0.join("history-current.json"), marker).unwrap();
         assert_eq!(snapshots(&f.0).len(), 1);
         assert!(!file.exists());
+    }
+
+    #[test]
+    fn deleting_a_version_does_not_resurrect_legacy_aliases_or_delete_other_files() {
+        let f = Fixture::new();
+        let first = f.publish();
+        let folder = directory(&f.0, &first).unwrap();
+        let legacy = f.0.join("cu/legacy");
+        std::fs::create_dir_all(&legacy).unwrap();
+        let alias = legacy.join("clip.vi.chu.mp4");
+        std::fs::copy(f.result(), &alias).unwrap();
+        let old_bytes = std::fs::read(&alias).unwrap();
+        f.video("blue");
+        f.publish();
+        let current_bytes = std::fs::read(f.result()).unwrap();
+        assert_eq!(crate::job::list_kept(&f.0).unwrap().len(), 1);
+        crate::job::delete_kept(f.0.parent().unwrap(), &folder.join("clip.vi.chu.mp4")).unwrap();
+        assert!(!folder.exists());
+        assert!(crate::job::list_kept(&f.0).unwrap().is_empty());
+        assert_eq!(std::fs::read(&alias).unwrap(), old_bytes);
+        assert_eq!(std::fs::read(f.result()).unwrap(), current_bytes);
+        // A user replacing the alias with different media must not be hidden.
+        std::fs::write(&alias, b"different legacy export").unwrap();
+        assert_eq!(crate::job::list_kept(&f.0).unwrap().len(), 1);
     }
 
     #[test]

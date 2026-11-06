@@ -392,7 +392,7 @@ pub(crate) fn delete_kept(output_dir: &Path, file: &Path) -> Result<(), String> 
     {
         return Err("Chỉ xóa được bản đã cất.".into());
     }
-    std::fs::remove_dir_all(&slot).map_err(|error| format!("Không xóa được: {error}"))
+    crate::history::delete_archive(job, &slot)
 }
 
 // Video đã có file kết quả đúng chế độ đang chọn thì trả đường dẫn đó. Chưa có thì trống.

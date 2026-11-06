@@ -15,6 +15,7 @@ export function Composer({
   mode,
   onMode,
   composeVideo,
+  sourceBrief,
   composeLink,
   linkError,
   onLink,
@@ -64,6 +65,7 @@ export function Composer({
   queue,
   onRun,
   onOpen,
+  onWatch,
   lock,
   onTools,
   onChanged,
@@ -73,6 +75,7 @@ export function Composer({
   mode: "file" | "link";
   onMode: (mode: "file" | "link") => void;
   composeVideo: string;
+  sourceBrief: {path:string; width:number; height:number; duration:number} | null;
   composeLink: string;
   // Lý do link đang dán không dùng được. Trống là dùng được hoặc chưa kiểm tra.
   linkError: string;
@@ -124,6 +127,7 @@ export function Composer({
   queue: QueueJob[];
   onRun: () => void;
   onOpen: () => void;
+  onWatch: () => void;
   // Dòng báo thiếu mục bắt buộc. Trống thì không khóa.
   lock: string;
   onTools: () => void;
@@ -193,6 +197,7 @@ export function Composer({
                   ? fileName(composeVideo)
                   : "Chọn một video để bắt đầu lồng tiếng."}
               </p>
+              {composeVideo && sourceBrief?.path === composeVideo && <small>{Math.round(sourceBrief.duration)} giây · {sourceBrief.width} × {sourceBrief.height}</small>}
             </div>
             <button
               type="button"
@@ -525,6 +530,10 @@ export function Composer({
       <footer className="pane-foot compose-foot">
         <LockedNote note={lock} onTools={onTools} />
         <span className="foot-actions">
+          {!textOnly && <button type="button" className="link preview-action" onClick={onWatch}
+            disabled={!canOpen || running}>
+            {audioOnly ? "Nghe trước" : "Xem trước"}
+          </button>}
           <button
             type="button"
             className="link preview-action"

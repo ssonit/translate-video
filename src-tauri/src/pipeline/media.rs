@@ -175,7 +175,12 @@ pub(crate) fn extract(app: &AppHandle, job: &Job, cancel: &AtomicBool) -> Result
         &mut |fraction| {
             report_progress(app, "extract", "Đang tách tiếng.", fraction, 1.0);
         },
-    )?;
+    ).map_err(|error| {
+        let lower = error.to_ascii_lowercase();
+        if lower.contains("does not contain any stream") || lower.contains("matches no streams") || lower.contains("no audio") {
+            "Video không có âm thanh để chép lời. Hãy chọn video có tiếng.".to_string()
+        } else { error }
+    })?;
     if !file_ready(&job.audio()) {
         return Err("FFmpeg không ghi được audio.wav.".into());
     }

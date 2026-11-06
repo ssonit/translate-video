@@ -337,7 +337,7 @@ export function playbackActions(s: Session) {
     s.setRunning(true);
     s.setView("progress");
     s.setRunNotice("Đã bắt đầu làm lại. Theo dõi xử lý tại Hàng đợi.");
-    s.ownsRun.current = true;
+    s.runEpoch.current += 1; s.ownsRun.current = true;
     try {
       const path = await invoke<string>("start_again", {
         result: s.result,
@@ -418,7 +418,7 @@ export function playbackActions(s: Session) {
     s.setRunStartedAt(Date.now());
     s.setRunning(true);
     s.setView("progress");
-    s.ownsRun.current = true;
+    s.runEpoch.current += 1; s.ownsRun.current = true;
     try {
       const path = await invoke<string>("revise_lines", { path: source, edits, structure: structure ?? null });
       s.setRunNotice("Đã xuất xong bản sửa. Đang mở kết quả mới để bạn xem.");

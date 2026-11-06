@@ -36,6 +36,10 @@ export function NameForm({
 
   function applyPaste() {
     const parsed = parseNamePaste(paste);
+    const existing = new Set(rows.map(row => row.from.trim().toLocaleLowerCase()).filter(Boolean));
+    const accepted = parsed.pairs.filter(pair => !existing.has(pair.from.toLocaleLowerCase()));
+    parsed.skippedDuplicates = (parsed.skippedDuplicates ?? 0) + parsed.pairs.length - accepted.length;
+    parsed.pairs = accepted;
     setPasteNote(pasteSummary(parsed));
     if (parsed.pairs.length === 0) return;
     onChange(mergeNameRows(rows, parsed.pairs));

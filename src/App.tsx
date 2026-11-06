@@ -143,13 +143,16 @@ export default function App() {
   }, [screen]);
 
   useEffect(() => {
+    let live = true;
     invoke<{ provider: Provider; apiKey: string }>("get_translation_choice")
       .then((choice) => {
+        if (!live) return;
         setProvider(choice.provider);
         setApiKey(choice.apiKey);
       })
       .catch(() => {});
-  }, []);
+    return () => { live = false; };
+  }, [screen]);
 
   const guide = guideFor(selected);
   const status = tools.find((tool) => tool.id === selected);

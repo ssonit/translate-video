@@ -82,7 +82,7 @@ export default function Work({
   const draftGuard = useRef<(() => Promise<boolean>) | null>(null);
   const registerDraftGuard = useCallback((guard: (() => Promise<boolean>) | null) => { draftGuard.current = guard; }, []);
   const draftActivity = useCallback((label: string) => {
-    setDraftBusy(label); s.ownsRun.current = !!label; s.setRunning(!!label);
+    setDraftBusy(label); if (label) s.runEpoch.current += 1; s.ownsRun.current = !!label; s.setRunning(!!label);
   }, [s.ownsRun, s.setRunning]);
   const draftOptions = () => ({ target:s.target,voice:s.voice,provider:s.provider,model:s.model,audioOnly:s.audioOnly,textOnly:s.textOnly,burn:s.burnCaptions,skipTranslate:s.skipTranslate,useTerms:s.useTerms,render:s.render });
   async function enterDraft(root: string) {
@@ -198,7 +198,7 @@ export default function Work({
         : s.running
           ? "Đang chạy"
           : s.result ? "Đã hoàn tất" : "Sẵn sàng";
-  const showLive = s.running || s.downloading || s.error !== "";
+  const showLive = s.running || s.downloading;
   // Việc đang chạy đã có một dòng trong danh sách thì không vẽ thêm thẻ tiến độ.
   const isLiveItem = (item: FinishedDub) =>
     !item.done &&
@@ -279,7 +279,7 @@ export default function Work({
             <div className="pane-fill">
               <NameForm
                 title="Sửa tên"
-                intro="Tên đúng dùng cho phụ đề và giọng. Lưu chỉ ghi danh sách, không xóa bản dịch."
+                intro="Tên đúng dùng cho phụ đề và giọng. Đổi danh sách sẽ tạo lại bản dịch và tiếng đọc; bản xuất cũ được giữ trong lịch sử."
                 note=""
                 error={s.nameNote}
                 rows={s.nameRows}
@@ -492,6 +492,7 @@ export default function Work({
               mode={s.mode}
               onMode={s.setMode}
               composeVideo={s.composeVideo}
+              sourceBrief={s.sourceBrief}
               composeLink={s.composeLink}
               linkError={s.linkError}
               onLink={s.setComposeLink}
@@ -541,6 +542,7 @@ export default function Work({
               queue={s.queue}
               onRun={() => void confirmDiscard().then(ok => { if (ok) void job.run(); })}
               onOpen={() => void openSource()}
+              onWatch={() => void confirmDiscard().then(ok => { if (ok) void job.runLive(); })}
               lock={lock}
               onTools={onSetup}
               onChanged={onChanged}
